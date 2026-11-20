@@ -128,10 +128,17 @@ fn watch_loop(
                         }
 
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
+                        let total = candidate_indices.len();
                         let mut last_err = None;
                         let mut played = false;
-                        for idx in candidate_indices {
+                        for (n, idx) in candidate_indices.into_iter().enumerate() {
                             let stream = &watch.streams[idx];
+                            println!(
+                                "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}",
+                                n + 1,
+                                total,
+                                stream.label
+                            );
                             match play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title) {
                                 Ok(()) => {
                                     played = true;

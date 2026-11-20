@@ -11,8 +11,8 @@ use crate::models::{Anime, AnimeSource, Episode, SourceKind, StreamOption, Watch
 use crate::sources::{build_client, normalize_tr};
 
 const MIRRORS: &[&str] = &[
-    "https://gitlab.com/AnimeDepo/animedepo/-/raw/master",
     "https://raw.githubusercontent.com/barkeser2002/turkanime-gui/main/arsiv",
+    "https://gitlab.com/AnimeDepo/animedepo/-/raw/master",
 ];
 const CACHE_TTL_SECS: u64 = 24 * 3600;
 

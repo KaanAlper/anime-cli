@@ -80,6 +80,7 @@ pub fn play_mpv(
         .arg("--demuxer-readahead-secs=60")
         .arg("--demuxer-max-bytes=150MiB")
         .arg("--demuxer-lavf-o=allowed_extensions=ALL")
+        .arg("--ytdl-raw-options=socket-timeout=5")
         .arg(format!("--title={title}"))
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");

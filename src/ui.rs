@@ -88,6 +88,8 @@ where
     let result = f();
     done.store(true, Ordering::Relaxed);
     let _ = handle.join();
+    print!("\r\x1b[2K");
+    let _ = io::stdout().flush();
     result
 }
 
