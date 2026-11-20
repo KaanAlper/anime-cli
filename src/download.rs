@@ -7,6 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::config::{log_error, mark_episode_downloaded};
 use crate::models::{Anime, Episode, StreamOption};
 use crate::player::{has_command, pick_preferred_stream_index};
 use crate::sources::get_source;
@@ -50,7 +51,7 @@ pub fn target_file_path(download_dir: &str, anime_title: &str, ep_title: &str) -
     dir.join(format!("{}.mp4", sanitize_name(ep_title)))
 }
 
-fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path) -> Result<Command> {
+fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> Result<Command> {
     let ytdlp = if has_command("yt-dlp") {
         "yt-dlp"
     } else if has_command("youtube-dl") {
@@ -75,12 +76,21 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path) -> Result<Command> {
         .arg("--referer")
         .arg(referer)
         .arg("--user-agent")
-        .arg("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36")
-        .arg("--downloader")
-        .arg("ffmpeg")
-        .arg("--downloader-args")
-        .arg("ffmpeg_i:-allowed_extensions ALL")
-        .arg("-o")
+        .arg("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
+
+    if use_aria2c && has_command("aria2c") {
+        cmd.arg("--downloader")
+            .arg("aria2c")
+            .arg("--downloader-args")
+            .arg("aria2c:-x 8 -s 8 -k 1M");
+    } else {
+        cmd.arg("--downloader")
+            .arg("ffmpeg")
+            .arg("--downloader-args")
+            .arg("ffmpeg_i:-allowed_extensions ALL");
+    }
+
+    cmd.arg("-o")
         .arg(out_path)
         .arg(&stream.url)
         .stdin(Stdio::null())
@@ -105,10 +115,13 @@ pub fn save_subtitle(sub_url: &str, out_video_path: &Path) {
 pub struct DownloadJob {
     pub anime: Anime,
     pub episode: Episode,
+    pub episode_index: usize,
     pub ep_in_season: usize,
     pub quality: String,
     pub banned_players: Vec<String>,
     pub out_path: PathBuf,
+    pub parallel_downloads: usize,
+    pub use_aria2c: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -118,6 +131,7 @@ pub struct DownloadStatus {
     pub paused: bool,
     pub active_title: Option<String>,
     pub active_progress: Option<String>,
+    pub active_items: Vec<(String, Option<String>)>,
     pub queued_titles: Vec<String>,
     pub completed_titles: Vec<String>,
 }
@@ -130,11 +144,18 @@ fn signal_pid(pid: u32, sig: &str) {
         .status();
 }
 
+struct ActiveDownload {
+    child: Child,
+    path: PathBuf,
+    title: String,
+    progress: Arc<Mutex<Option<String>>>,
+    job: DownloadJob,
+}
+
 pub struct DownloadManager {
     queue: VecDeque<DownloadJob>,
     known_paths: HashSet<PathBuf>,
-    active_child: Option<(Child, PathBuf, String)>,
-    active_progress: Arc<Mutex<Option<String>>>,
+    active_children: Vec<ActiveDownload>,
     completed_titles: Vec<String>,
     playback_depth: usize,
 }
@@ -144,8 +165,7 @@ impl DownloadManager {
         Self {
             queue: VecDeque::new(),
             known_paths: HashSet::new(),
-            active_child: None,
-            active_progress: Arc::new(Mutex::new(None)),
+            active_children: Vec::new(),
             completed_titles: Vec::new(),
             playback_depth: 0,
         }
@@ -159,47 +179,64 @@ impl DownloadManager {
 
     pub fn on_playback_started(&mut self) {
         self.playback_depth += 1;
-        if self.playback_depth == 1
-            && let Some((ref child, _, _)) = self.active_child
-        {
-            signal_pid(child.id(), "-STOP");
+        if self.playback_depth == 1 {
+            for act in &self.active_children {
+                signal_pid(act.child.id(), "-STOP");
+            }
         }
     }
 
     pub fn on_playback_ended(&mut self) {
         self.playback_depth = self.playback_depth.saturating_sub(1);
-        if self.playback_depth == 0
-            && let Some((ref child, _, _)) = self.active_child
-        {
-            signal_pid(child.id(), "-CONT");
+        if self.playback_depth == 0 {
+            for act in &self.active_children {
+                signal_pid(act.child.id(), "-CONT");
+            }
         }
     }
 
     pub fn tick(&mut self) {
-        if let Some((mut child, path, title)) = self.active_child.take() {
-            match child.try_wait() {
+        let mut still_running = Vec::new();
+        for mut act in self.active_children.drain(..) {
+            match act.child.try_wait() {
                 Ok(Some(st)) => {
-                    self.known_paths.remove(&path);
+                    self.known_paths.remove(&act.path);
                     if st.success() {
-                        self.completed_titles.push(title);
+                        let _ = mark_episode_downloaded(
+                            act.job.anime.source.display_name(),
+                            &act.job.anime.id,
+                            &act.job.anime.title,
+                            act.job.anime.is_movie,
+                            act.job.episode_index,
+                            &act.job.episode.title,
+                        );
+                        self.completed_titles.push(act.title);
                         if self.completed_titles.len() > 10 {
                             self.completed_titles.remove(0);
                         }
+                    } else {
+                        log_error(&format!("İndirme başarısız: {}", act.title));
                     }
                 }
-                Ok(None) => {
-                    self.active_child = Some((child, path, title));
-                }
-                Err(_) => {
-                    self.known_paths.remove(&path);
+                Ok(None) => still_running.push(act),
+                Err(e) => {
+                    self.known_paths.remove(&act.path);
+                    log_error(&format!("İndirme süreç hatası ({}): {e}", act.title));
                 }
             }
         }
+        self.active_children = still_running;
 
-        if self.playback_depth == 0
-            && self.active_child.is_none()
-            && let Some(job) = self.queue.pop_front()
-        {
+        let max_parallel = self
+            .queue
+            .front()
+            .map(|j| j.parallel_downloads.clamp(1, 10))
+            .unwrap_or(1);
+
+        while self.playback_depth == 0 && self.active_children.len() < max_parallel {
+            let Some(job) = self.queue.pop_front() else {
+                break;
+            };
             if !job.out_path.exists() {
                 let src = get_source(job.anime.source);
                 if let Ok(watch) = src.get_watch_data(&job.anime, &job.episode, job.ep_in_season) {
@@ -220,14 +257,12 @@ impl DownloadManager {
                         {
                             save_subtitle(sub, &job.out_path);
                         }
-                        if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
+                        if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path, job.use_aria2c)
                             && let Ok(mut child) = cmd.spawn()
                         {
-                            if let Ok(mut p) = self.active_progress.lock() {
-                                *p = Some("Başlatılıyor...".to_string());
-                            }
+                            let progress = Arc::new(Mutex::new(Some("Başlatılıyor...".to_string())));
                             if let Some(stdout) = child.stdout.take() {
-                                let prog = Arc::clone(&self.active_progress);
+                                let prog = Arc::clone(&progress);
                                 thread::spawn(move || {
                                     let reader = BufReader::new(stdout);
                                     for line in reader.lines().map_while(Result::ok) {
@@ -252,8 +287,15 @@ impl DownloadManager {
                                 });
                             }
                             let title = format!("{} — {}", job.anime.title, job.episode.title);
-                            self.active_child = Some((child, job.out_path, title));
-                            return;
+                            let path = job.out_path.clone();
+                            self.active_children.push(ActiveDownload {
+                                child,
+                                path,
+                                title,
+                                progress,
+                                job,
+                            });
+                            continue;
                         }
                     }
                 }
@@ -263,16 +305,22 @@ impl DownloadManager {
     }
 
     pub fn status(&self) -> DownloadStatus {
+        let active_items: Vec<(String, Option<String>)> = self
+            .active_children
+            .iter()
+            .map(|a| {
+                let prog = a.progress.lock().ok().and_then(|g| g.clone());
+                (a.title.clone(), prog)
+            })
+            .collect();
+        let first = active_items.first();
         DownloadStatus {
             queued: self.queue.len(),
-            active: self.active_child.is_some(),
-            paused: self.playback_depth > 0 && self.active_child.is_some(),
-            active_title: self.active_child.as_ref().map(|(_, _, t)| t.clone()),
-            active_progress: self
-                .active_progress
-                .lock()
-                .ok()
-                .and_then(|g| g.clone()),
+            active: !self.active_children.is_empty(),
+            paused: self.playback_depth > 0 && !self.active_children.is_empty(),
+            active_title: first.map(|(t, _)| t.clone()),
+            active_progress: first.and_then(|(_, p)| p.clone()),
+            active_items,
             queued_titles: self
                 .queue
                 .iter()

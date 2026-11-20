@@ -76,6 +76,14 @@ pub fn pick_preferred_stream_index(streams: &[StreamOption], preferred_quality: 
         .unwrap_or(0)
 }
 
+fn player_priority_rank(label: &str, player_priority: &[String]) -> usize {
+    let lower = label.to_ascii_lowercase();
+    player_priority
+        .iter()
+        .position(|p| lower.contains(&p.to_ascii_lowercase()))
+        .unwrap_or(usize::MAX)
+}
+
 /// Builds the full playback fallback order grouped by fansub:
 /// 1. If `selected_fansub` is Some(f), try all players of `f` first (preferred player/quality first),
 ///    then all players of every other fansub in order.
@@ -85,6 +93,7 @@ pub fn build_playback_order(
     streams: &[StreamOption],
     selected_fansub: Option<&str>,
     preferred_quality: &str,
+    player_priority: &[String],
 ) -> Vec<usize> {
     if streams.is_empty() {
         return Vec::new();
@@ -107,9 +116,12 @@ pub fn build_playback_order(
         fansub_groups.insert(0, chosen);
     }
 
+    let pref = preferred_quality.trim().to_lowercase();
+    let specific_pref = !pref.is_empty() && pref != "best" && pref != "auto";
+
     let mut order = Vec::with_capacity(streams.len());
     for group in fansub_groups {
-        let group_indices: Vec<usize> = streams
+        let mut group_indices: Vec<usize> = streams
             .iter()
             .enumerate()
             .filter(|(_, s)| s.fansub.as_deref() == group)
@@ -118,16 +130,31 @@ pub fn build_playback_order(
         if group_indices.is_empty() {
             continue;
         }
-        let group_streams: Vec<StreamOption> =
-            group_indices.iter().map(|&i| streams[i].clone()).collect();
-        let best_local = pick_preferred_stream_index(&group_streams, preferred_quality);
-        let best_global = group_indices[best_local];
+        if player_priority.is_empty() {
+            let group_streams: Vec<StreamOption> =
+                group_indices.iter().map(|&i| streams[i].clone()).collect();
+            let best_local = pick_preferred_stream_index(&group_streams, preferred_quality);
+            let best_global = group_indices[best_local];
 
-        order.push(best_global);
-        for idx in group_indices {
-            if idx != best_global {
-                order.push(idx);
+            order.push(best_global);
+            for idx in group_indices {
+                if idx != best_global {
+                    order.push(idx);
+                }
             }
+        } else {
+            group_indices.sort_by_key(|&i| {
+                let s = &streams[i];
+                let exact_match = if specific_pref && s.label.to_lowercase().contains(&pref) {
+                    0u8
+                } else {
+                    1u8
+                };
+                let prio = player_priority_rank(&s.label, player_priority);
+                let res = std::cmp::Reverse(extract_resolution_score(&s.label));
+                (exact_match, prio, res, i)
+            });
+            order.extend(group_indices);
         }
     }
 
@@ -208,6 +235,7 @@ pub fn play_mpv(
     stream: &StreamOption,
     subtitle_url: Option<&str>,
     title: &str,
+    remember_position: bool,
 ) -> Result<()> {
     let resolved_embed = !is_direct_stream_url(&stream.url) && has_ytdlp();
     let (target_url, extra_headers) = if resolved_embed {
@@ -283,9 +311,11 @@ end)
     };
 
     let mut cmd = Command::new("mpv");
-    cmd.arg("--fullscreen")
-        .arg("--save-position-on-quit")
-        .arg("--really-quiet")
+    cmd.arg("--fullscreen");
+    if remember_position {
+        cmd.arg("--save-position-on-quit");
+    }
+    cmd.arg("--really-quiet")
         .arg("--no-terminal")
         .arg("--cache=yes")
         .arg("--demuxer-seekable-cache=yes")
@@ -389,11 +419,15 @@ mod tests {
             StreamOption { label: "Player2".into(), url: "u4".into(), referer: None, fansub: Some("Fansub B".into()) },
         ];
         // Selected Fansub B + Player2 -> tries (B, Player2), (B, Player1), then (A, Player2), (A, Player1)
-        let order = build_playback_order(&streams, Some("Fansub B"), "Player2");
+        let order = build_playback_order(&streams, Some("Fansub B"), "Player2", &[]);
         assert_eq!(order, vec![3, 1, 2, 0]);
 
         // All fansubs + best -> tries all of A first, then all of B
-        let all_order = build_playback_order(&streams, None, "best");
+        let all_order = build_playback_order(&streams, None, "best", &[]);
         assert_eq!(all_order, vec![0, 2, 1, 3]);
+
+        // Player priority: Player2 preferred over Player1
+        let prio_order = build_playback_order(&streams, Some("Fansub B"), "best", &["Player2".into()]);
+        assert_eq!(prio_order, vec![3, 1, 2, 0]);
     }
 }

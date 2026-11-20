@@ -22,6 +22,7 @@ pub struct AppBusStatus {
     pub download_paused: bool,
     pub active_title: Option<String>,
     pub active_progress: Option<String>,
+    pub active_items: Vec<(String, Option<String>)>,
     pub queued_titles: Vec<String>,
     pub completed_titles: Vec<String>,
 }
@@ -72,6 +73,7 @@ fn init_bus() -> &'static EventBus {
                     st.download_paused = dl.paused;
                     st.active_title = dl.active_title;
                     st.active_progress = dl.active_progress;
+                    st.active_items = dl.active_items;
                     st.queued_titles = dl.queued_titles;
                     st.completed_titles = dl.completed_titles;
                 }

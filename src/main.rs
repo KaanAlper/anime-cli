@@ -12,7 +12,8 @@ use clap::Parser;
 use std::fs;
 
 use crate::config::{
-    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config, watched_for_anime,
+    AppConfig, HistoryEntry, cache_dir, downloaded_for_anime, load_config, load_history,
+    save_config, watched_for_anime,
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{
@@ -20,13 +21,23 @@ use crate::player::{
 };
 use crate::sources::get_source;
 
-fn format_episode_choices(anime: &Anime, episodes: &[Episode]) -> (Vec<String>, usize) {
+fn format_episode_choices(
+    anime: &Anime,
+    episodes: &[Episode],
+    show_icon: bool,
+    for_download: bool,
+) -> (Vec<String>, usize) {
     let (watched, last) = watched_for_anime(anime.source.display_name(), &anime.id);
+    let marked = if for_download {
+        downloaded_for_anime(anime.source.display_name(), &anime.id)
+    } else {
+        watched
+    };
     let titles = episodes
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            if watched.contains(&i) {
+            if show_icon && marked.contains(&i) {
                 format!("{} ●", e.title)
             } else {
                 e.title.clone()
@@ -144,6 +155,7 @@ fn watch_loop(
                             &allowed_streams,
                             selected_fansub.as_deref(),
                             q_pref,
+                            &cfg.player_priority,
                         );
                         let primary_idx = candidate_indices[0];
                         let primary = &allowed_streams[primary_idx];
@@ -182,6 +194,7 @@ fn watch_loop(
                             bus::emit(bus::AppEvent::EnqueueDownload(download::DownloadJob {
                                 anime: anime.clone(),
                                 episode: ep.clone(),
+                                episode_index: ep_idx,
                                 ep_in_season,
                                 quality: q_pref.to_string(),
                                 banned_players: cfg.banned_players.clone(),
@@ -190,6 +203,8 @@ fn watch_loop(
                                     &anime.title,
                                     &ep.title,
                                 ),
+                                parallel_downloads: cfg.parallel_downloads,
+                                use_aria2c: cfg.use_aria2c,
                             }));
                         }
 
@@ -216,7 +231,12 @@ fn watch_loop(
                                 stream.label,
                                 fs_tag
                             );
-                            match play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title) {
+                            match play_mpv(
+                                stream,
+                                watch.subtitle_url.as_deref(),
+                                &mpv_title,
+                                cfg.remember_position,
+                            ) {
                                 Ok(()) => {
                                     played = true;
                                     break;
@@ -240,6 +260,7 @@ fn watch_loop(
                                 episode_index: ep_idx,
                                 episode_title: ep.title.clone(),
                                 watched_episodes: vec![ep_idx],
+                                downloaded_episodes: Vec::new(),
                             })
                         } else {
                             None
@@ -272,7 +293,7 @@ fn watch_loop(
                 }
             }
             "Bölüm seç" => {
-                let (ep_titles, _) = format_episode_choices(anime, episodes);
+                let (ep_titles, _) = format_episode_choices(anime, episodes, cfg.show_watched_icon, false);
                 if let Some(idx) = ui::select("Bölüm seç", &anime.title, &ep_titles, ep_idx)? {
                     ep_idx = idx;
                 }
@@ -429,7 +450,8 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
     let ep_idx = if selected.is_movie || episodes.len() == 1 {
         0
     } else {
-        let (ep_titles, initial) = format_episode_choices(selected, &episodes);
+        let (ep_titles, initial) =
+            format_episode_choices(selected, &episodes, cfg.show_watched_icon, false);
         match ui::select("Bölüm seç", &selected.title, &ep_titles, initial)? {
             Some(i) => i,
             None => return Ok(()),
@@ -482,10 +504,13 @@ fn download_indices(
         bus::emit(bus::AppEvent::EnqueueDownload(download::DownloadJob {
             anime: anime.clone(),
             episode: ep.clone(),
+            episode_index: idx,
             ep_in_season,
             quality: q_pref.to_string(),
             banned_players: cfg.banned_players.clone(),
             out_path: download::target_file_path(&cfg.download_dir, &anime.title, &ep.title),
+            parallel_downloads: cfg.parallel_downloads,
+            use_aria2c: cfg.use_aria2c,
         }));
     }
 
@@ -515,18 +540,19 @@ fn show_download_status(cfg: &AppConfig) {
             .status();
 
         let st = bus::status();
-        if let Some(ref active) = st.active_title {
+        if !st.active_items.is_empty() {
             let icon = if st.download_paused {
                 "\x1b[38;2;196;180;139m⏸ Duraklatıldı\x1b[0m"
             } else {
                 "\x1b[38;2;228;92;192m⬇ İndiriliyor\x1b[0m"
             };
-            let prog = st
-                .active_progress
-                .as_deref()
-                .map(|p| format!("  \x1b[38;2;139;178;127m[{p}]\x1b[0m"))
-                .unwrap_or_default();
-            println!("  {icon}  {active}{prog}");
+            for (active, progress) in &st.active_items {
+                let prog = progress
+                    .as_deref()
+                    .map(|p| format!("  \x1b[38;2;139;178;127m[{p}]\x1b[0m"))
+                    .unwrap_or_default();
+                println!("  {icon}  {active}{prog}");
+            }
         } else if st.queued_downloads == 0 && st.completed_titles.is_empty() {
             println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m");
         }
@@ -594,7 +620,7 @@ fn download_menu(
     match choice {
         0 => download_indices(cfg, anime, episodes, &[ep_idx], manual_quality),
         1 => {
-            let (titles, _) = format_episode_choices(anime, episodes);
+            let (titles, _) = format_episode_choices(anime, episodes, cfg.show_watched_icon, true);
             if let Some(picked) = ui::multi_select(
                 "Bölümleri Seç (Space ile işaretle, Enter ile indir)",
                 &anime.title,
@@ -636,18 +662,101 @@ fn download_menu(
     Ok(())
 }
 
+fn known_players_list() -> Vec<String> {
+    [
+        "GDRIVE",
+        "MAIL",
+        "ODNOKLASSNIKI",
+        "OK.RU",
+        "SIBNET",
+        "VK",
+        "YADISK",
+        "PIXELDRAIN",
+        "HDVID",
+        "VIDMOLY",
+        "SENDVID",
+        "MYVI",
+        "MP4UPLOAD",
+        "UQLOAD",
+        "DOODSTREAM",
+        "STREAMSB",
+        "DAILYMOTION",
+        "Beta Player",
+        "Aincrad",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn edit_player_priority(cfg: &mut AppConfig) -> Result<()> {
+    let mut order: Vec<String> = if cfg.player_priority.is_empty() {
+        known_players_list()
+    } else {
+        let mut v = cfg.player_priority.clone();
+        for p in known_players_list() {
+            if !v.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
+                v.push(p);
+            }
+        }
+        v
+    };
+
+    loop {
+        let mut items: Vec<String> = order
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("{:02}. {p}", i + 1))
+            .collect();
+        items.push("Varsayılana Sıfırla".into());
+        items.push("Kaydet ve Çık".into());
+
+        let Some(idx) = ui::select(
+            "Player Öncelik Sırası",
+            "Yukarı taşımak istediğiniz oynatıcıyı seçin",
+            &items,
+            0,
+        )?
+        else {
+            return Ok(());
+        };
+
+        if idx == order.len() {
+            cfg.player_priority.clear();
+            let _ = save_config(cfg);
+            return Ok(());
+        } else if idx == order.len() + 1 {
+            cfg.player_priority = order;
+            let _ = save_config(cfg);
+            return Ok(());
+        } else if idx > 0 {
+            order.swap(idx, idx - 1);
+            cfg.player_priority = order.clone();
+            let _ = save_config(cfg);
+        }
+    }
+}
+
 fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<()> {
     loop {
-        let dl_watch_box = if cfg.download_while_watching {
-            "[x] Açık"
-        } else {
-            "[ ] Kapalı"
-        };
+        let on_off = |v: bool| if v { "[x] Açık" } else { "[ ] Kapalı" };
         let items = vec![
             format!("Varsayılan Kaynak ({})", active_source.display_name()),
             format!("Varsayılan Kalite ({})", cfg.preferred_quality),
             format!("İndirme Dizini ({})", cfg.download_dir),
-            format!("İzlerken İndir ({dl_watch_box})"),
+            format!("İzlerken İndir ({})", on_off(cfg.download_while_watching)),
+            format!("Paralel İndirme Sayısı ({})", cfg.parallel_downloads),
+            format!("Aria2c ile Hızlandır ({})", on_off(cfg.use_aria2c)),
+            format!("Kaldığın Dakikayı Hatırla ({})", on_off(cfg.remember_position)),
+            format!("İzlendi/İndirildi İkonu ({})", on_off(cfg.show_watched_icon)),
+            format!(
+                "Player Öncelik Sırası ({})",
+                if cfg.player_priority.is_empty() {
+                    "Varsayılan".to_string()
+                } else {
+                    format!("{} özel", cfg.player_priority.len())
+                }
+            ),
             format!("Banlı Oynatıcılar ({} seçili)", cfg.banned_players.len()),
             "Önbelleği Temizle".into(),
             "Geri".into(),
@@ -698,30 +807,32 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
                 let _ = save_config(cfg);
             }
             4 => {
-                let mut known: Vec<String> = [
-                    "GDRIVE",
-                    "MAIL",
-                    "ODNOKLASSNIKI",
-                    "OK.RU",
-                    "SIBNET",
-                    "VK",
-                    "YADISK",
-                    "PIXELDRAIN",
-                    "HDVID",
-                    "VIDMOLY",
-                    "SENDVID",
-                    "MYVI",
-                    "MP4UPLOAD",
-                    "UQLOAD",
-                    "DOODSTREAM",
-                    "STREAMSB",
-                    "DAILYMOTION",
-                    "Beta Player",
-                    "Aincrad",
-                ]
-                .into_iter()
-                .map(String::from)
-                .collect();
+                if let Some(val) = ui::input(
+                    "Paralel İndirme Sayısı (1-10)",
+                    &cfg.parallel_downloads.to_string(),
+                )? && let Ok(n) = val.trim().parse::<usize>()
+                {
+                    cfg.parallel_downloads = n.clamp(1, 10);
+                    let _ = save_config(cfg);
+                }
+            }
+            5 => {
+                cfg.use_aria2c = !cfg.use_aria2c;
+                let _ = save_config(cfg);
+            }
+            6 => {
+                cfg.remember_position = !cfg.remember_position;
+                let _ = save_config(cfg);
+            }
+            7 => {
+                cfg.show_watched_icon = !cfg.show_watched_icon;
+                let _ = save_config(cfg);
+            }
+            8 => {
+                edit_player_priority(cfg)?;
+            }
+            9 => {
+                let mut known = known_players_list();
                 for existing in &cfg.banned_players {
                     if !known.contains(existing) {
                         known.push(existing.clone());
@@ -737,7 +848,7 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
                     let _ = save_config(cfg);
                 }
             }
-            5 => {
+            10 => {
                 let _ = fs::remove_dir_all(cache_dir());
                 bus::emit(bus::AppEvent::CacheCleared);
                 ui::show_error("Önbellek temizlendi.");

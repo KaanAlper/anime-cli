@@ -150,6 +150,7 @@ where
 }
 
 pub fn show_error(msg: &str) {
+    crate::config::log_error(msg);
     clear_screen();
     let _ = Command::new("gum")
         .args([
