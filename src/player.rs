@@ -133,7 +133,12 @@ pub fn build_playback_order(
     order
 }
 
-pub fn resolve_embed_with_ytdlp(url: &str, referer: Option<&str>) -> Result<String> {
+pub struct ResolvedStream {
+    pub url: String,
+    pub headers: Vec<String>,
+}
+
+pub fn resolve_embed_with_ytdlp(url: &str, referer: Option<&str>) -> Result<ResolvedStream> {
     let ytdlp = if has_command("yt-dlp") {
         "yt-dlp"
     } else {
@@ -153,7 +158,7 @@ pub fn resolve_embed_with_ytdlp(url: &str, referer: Option<&str>) -> Result<Stri
         "1",
         "-f",
         "best",
-        "-g",
+        "-J",
     ];
     if let Some(r) = referer {
         args.push("--referer");
@@ -170,17 +175,32 @@ pub fn resolve_embed_with_ytdlp(url: &str, referer: Option<&str>) -> Result<Stri
         bail!("Embed bağlantısı çözülemedi (ölü veya zaman aşımı)");
     }
 
-    let resolved = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
+    let info: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("yt-dlp JSON çıktısı ayrıştırılamadı")?;
+    let resolved_url = info
+        .get("url")
+        .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_string();
 
-    if resolved.is_empty() {
+    if resolved_url.is_empty() {
         bail!("yt-dlp boş URL döndürdü");
     }
-    Ok(resolved)
+
+    let mut headers = Vec::new();
+    if let Some(hdrs) = info.get("http_headers").and_then(|v| v.as_object()) {
+        for (k, v) in hdrs {
+            if let Some(val) = v.as_str() {
+                headers.push(format!("{k}: {val}"));
+            }
+        }
+    }
+
+    Ok(ResolvedStream {
+        url: resolved_url,
+        headers,
+    })
 }
 
 pub fn play_mpv(
@@ -189,12 +209,12 @@ pub fn play_mpv(
     title: &str,
 ) -> Result<()> {
     let resolved_embed = !is_direct_stream_url(&stream.url) && has_ytdlp();
-    let target_url = if resolved_embed {
-        let u = resolve_embed_with_ytdlp(&stream.url, stream.referer.as_deref())?;
+    let (target_url, extra_headers) = if resolved_embed {
+        let res = resolve_embed_with_ytdlp(&stream.url, stream.referer.as_deref())?;
         println!("  \x1b[38;2;139;178;127m✔\x1b[0m Bağlantı çözüldü, mpv açılıyor...");
-        u
+        (res.url, res.headers)
     } else {
-        stream.url.clone()
+        (stream.url.clone(), Vec::new())
     };
 
     let is_hls = {
@@ -211,6 +231,7 @@ pub fn play_mpv(
         .arg("--really-quiet")
         .arg("--no-terminal")
         .arg("--cache=yes")
+        .arg("--demuxer-seekable-cache=yes")
         .arg("--force-seekable=yes")
         .arg("--hr-seek=yes")
         .arg("--demuxer-readahead-secs=60")
@@ -229,6 +250,10 @@ pub fn play_mpv(
     cmd.arg(format!("--title={title}"))
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
+
+    for hdr in &extra_headers {
+        cmd.arg(format!("--http-header-fields-add={hdr}"));
+    }
 
     if let Some(referer) = stream.referer.as_deref()
         && !referer.is_empty()
