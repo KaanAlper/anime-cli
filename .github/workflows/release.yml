@@ -10,29 +10,67 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: anime-linux-x86_64
-            bin: target/release/anime
-          - os: windows-latest
-            artifact: anime-windows-x86_64.exe
-            bin: target/release/anime.exe
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.bin }}
+          name: anime-linux-x86_64
+          path: target/release/anime
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+
+      - name: Prepare standalone Windows bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path bundle | Out-Null
+          Copy-Item target\release\anime.exe bundle\anime.exe
+
+          # yt-dlp.exe
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile bundle\yt-dlp.exe
+
+          # gum.exe (latest Windows x86_64 zip from charmbracelet/gum)
+          $gumRel = Invoke-RestMethod "https://api.github.com/repos/charmbracelet/gum/releases/latest"
+          $gumAsset = $gumRel.assets | Where-Object { $_.name -match "Windows_x86_64\.zip$" } | Select-Object -First 1
+          Invoke-WebRequest -Uri $gumAsset.browser_download_url -OutFile gum.zip
+          Expand-Archive gum.zip -DestinationPath gum_tmp -Force
+          Get-ChildItem gum_tmp -Recurse -Filter "gum.exe" | Select-Object -First 1 | Copy-Item -Destination bundle\gum.exe
+
+          # ffmpeg.exe
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1 | Copy-Item -Destination bundle\ffmpeg.exe
+
+          # mpv (latest shinchiro/mpv-winbuild-cmake x86_64 .7z)
+          $mpvRel = Invoke-RestMethod "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
+          $mpvAsset = $mpvRel.assets | Where-Object { $_.name -match "^mpv-x86_64-[0-9].*\.7z$" } | Select-Object -First 1
+          Invoke-WebRequest -Uri $mpvAsset.browser_download_url -OutFile mpv.7z
+          7z x mpv.7z -ompv_tmp -y | Out-Null
+          Copy-Item -Recurse -Force mpv_tmp\* bundle\
+
+          Compress-Archive -Path bundle\* -DestinationPath anime-windows-x86_64-bundle.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anime-windows-x86_64.exe
+          path: target/release/anime.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anime-windows-x86_64-bundle.zip
+          path: anime-windows-x86_64-bundle.zip
 
   release:
-    needs: build
+    needs: [build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

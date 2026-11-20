@@ -13,17 +13,36 @@ pub fn take_interrupted() -> bool {
     INTERRUPTED.swap(false, Ordering::SeqCst)
 }
 
-pub fn has_command(name: &str) -> bool {
-    if let Some(paths) = env::var_os("PATH") {
-        for dir in env::split_paths(&paths) {
-            if dir.join(name).is_file() {
+fn check_in_dir(dir: &std::path::Path, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        if dir.join(name).is_file() {
+            return true;
+        }
+        for ext in ["exe", "cmd", "bat"] {
+            if dir.join(format!("{name}.{ext}")).is_file() {
                 return true;
             }
-            #[cfg(windows)]
-            for ext in ["exe", "cmd", "bat"] {
-                if dir.join(format!("{name}.{ext}")).is_file() {
-                    return true;
-                }
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(name).is_file()
+    }
+}
+
+pub fn has_command(name: &str) -> bool {
+    if let Ok(exe) = env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+        && check_in_dir(exe_dir, name)
+    {
+        return true;
+    }
+    if let Some(paths) = env::var_os("PATH") {
+        for dir in env::split_paths(&paths) {
+            if check_in_dir(&dir, name) {
+                return true;
             }
         }
     }
