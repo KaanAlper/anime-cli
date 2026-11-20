@@ -569,6 +569,9 @@ fn show_download_status(cfg: &AppConfig) {
         for done in &st.completed_titles {
             println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}");
         }
+        for fail in &st.failed_titles {
+            println!("  \x1b[38;2;255;95;95m✖ Başarısız\x1b[0m    {fail}");
+        }
 
         if !st.active_download && st.queued_downloads == 0 {
             println!("\n\x1b[38;2;102;102;102mMenüye dönmek için Enter'a basın...\x1b[0m");
@@ -601,7 +604,7 @@ fn download_menu(
 
     let options = vec![
         format!("Bu bölümü indir ({})", episodes[ep_idx].title),
-        "Bölüm seçerek indir (Space ile)".to_string(),
+        "Bölüm seçerek indir (x / Tab ile)".to_string(),
         format!("Hepsini indir (1-{})", episodes.len()),
         "Bölüm aralığı indir (ör. 5-12)".to_string(),
         "Geri".to_string(),
@@ -622,7 +625,7 @@ fn download_menu(
         1 => {
             let (titles, _) = format_episode_choices(anime, episodes, cfg.show_watched_icon, true);
             if let Some(picked) = ui::multi_select(
-                "Bölümleri Seç (Space ile işaretle, Enter ile indir)",
+                "Bölümleri Seç (x veya Tab ile işaretle, Enter ile indir)",
                 &anime.title,
                 &titles,
                 &[],
@@ -840,7 +843,7 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
                 }
                 if let Some(picked) = ui::multi_select(
                     "Banlı Oynatıcılar",
-                    "Space ile seç/kaldır, Enter ile kaydet (denemelerde otomatik atlanır)",
+                    "x veya Tab ile seç/kaldır, Enter ile kaydet (denemelerde otomatik atlanır)",
                     &known,
                     &cfg.banned_players,
                 )? {

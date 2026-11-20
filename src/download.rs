@@ -134,6 +134,7 @@ pub struct DownloadStatus {
     pub active_items: Vec<(String, Option<String>)>,
     pub queued_titles: Vec<String>,
     pub completed_titles: Vec<String>,
+    pub failed_titles: Vec<String>,
 }
 
 fn signal_pid(pid: u32, sig: &str) {
@@ -157,6 +158,7 @@ pub struct DownloadManager {
     known_paths: HashSet<PathBuf>,
     active_children: Vec<ActiveDownload>,
     completed_titles: Vec<String>,
+    failed_titles: Vec<String>,
     playback_depth: usize,
 }
 
@@ -167,6 +169,7 @@ impl DownloadManager {
             known_paths: HashSet::new(),
             active_children: Vec::new(),
             completed_titles: Vec::new(),
+            failed_titles: Vec::new(),
             playback_depth: 0,
         }
     }
@@ -215,13 +218,17 @@ impl DownloadManager {
                             self.completed_titles.remove(0);
                         }
                     } else {
-                        log_error(&format!("İndirme başarısız: {}", act.title));
+                        let msg = format!("{} (yt-dlp çıkış kodu: {:?})", act.title, st.code());
+                        log_error(&format!("İndirme başarısız: {msg}"));
+                        self.failed_titles.push(msg);
                     }
                 }
                 Ok(None) => still_running.push(act),
                 Err(e) => {
                     self.known_paths.remove(&act.path);
-                    log_error(&format!("İndirme süreç hatası ({}): {e}", act.title));
+                    let msg = format!("{} ({e})", act.title);
+                    log_error(&format!("İndirme süreç hatası: {msg}"));
+                    self.failed_titles.push(msg);
                 }
             }
         }
@@ -238,67 +245,89 @@ impl DownloadManager {
                 break;
             };
             if !job.out_path.exists() {
+                let job_title = format!("{} — {}", job.anime.title, job.episode.title);
                 let src = get_source(job.anime.source);
-                if let Ok(watch) = src.get_watch_data(&job.anime, &job.episode, job.ep_in_season) {
-                    let allowed: Vec<_> = watch
-                        .streams
-                        .into_iter()
-                        .filter(|s| {
-                            !job.banned_players
-                                .iter()
-                                .any(|b| s.label.to_ascii_lowercase().contains(&b.to_ascii_lowercase()))
-                        })
-                        .collect();
-                    if !allowed.is_empty() {
-                        let idx = pick_preferred_stream_index(&allowed, &job.quality);
-                        let stream = &allowed[idx];
-                        if let Some(ref sub) = watch.subtitle_url
-                            && !sub.is_empty()
-                        {
-                            save_subtitle(sub, &job.out_path);
-                        }
-                        if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path, job.use_aria2c)
-                            && let Ok(mut child) = cmd.spawn()
-                        {
-                            let progress = Arc::new(Mutex::new(Some("Başlatılıyor...".to_string())));
-                            if let Some(stdout) = child.stdout.take() {
-                                let prog = Arc::clone(&progress);
-                                thread::spawn(move || {
-                                    let reader = BufReader::new(stdout);
-                                    for line in reader.lines().map_while(Result::ok) {
-                                        let t = line.trim();
-                                        if t.contains('|') {
-                                            let parts: Vec<&str> = t.split('|').collect();
-                                            if parts.len() >= 3
-                                                && let Ok(mut p) = prog.lock()
-                                            {
-                                                *p = Some(format!(
-                                                    "{}  •  {}  •  ETA {}",
-                                                    parts[0].trim(),
-                                                    parts[1].trim(),
-                                                    parts[2].trim()
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    if let Ok(mut p) = prog.lock() {
-                                        *p = None;
-                                    }
-                                });
+                match src.get_watch_data(&job.anime, &job.episode, job.ep_in_season) {
+                    Ok(watch) => {
+                        let allowed: Vec<_> = watch
+                            .streams
+                            .into_iter()
+                            .filter(|s| {
+                                !job.banned_players
+                                    .iter()
+                                    .any(|b| s.label.to_ascii_lowercase().contains(&b.to_ascii_lowercase()))
+                            })
+                            .collect();
+                        if allowed.is_empty() {
+                            let msg = format!("{job_title} (uygun oynatıcı yok)");
+                            log_error(&format!("İndirme başarısız: {msg}"));
+                            self.failed_titles.push(msg);
+                        } else {
+                            let idx = pick_preferred_stream_index(&allowed, &job.quality);
+                            let stream = &allowed[idx];
+                            if let Some(ref sub) = watch.subtitle_url
+                                && !sub.is_empty()
+                            {
+                                save_subtitle(sub, &job.out_path);
                             }
-                            let title = format!("{} — {}", job.anime.title, job.episode.title);
-                            let path = job.out_path.clone();
-                            self.active_children.push(ActiveDownload {
-                                child,
-                                path,
-                                title,
-                                progress,
-                                job,
-                            });
-                            continue;
+                            match build_ytdlp_cmd(stream, &job.out_path, job.use_aria2c)
+                                .and_then(|mut c| c.spawn().map_err(Into::into))
+                            {
+                                Ok(mut child) => {
+                                    let progress =
+                                        Arc::new(Mutex::new(Some("Başlatılıyor...".to_string())));
+                                    if let Some(stdout) = child.stdout.take() {
+                                        let prog = Arc::clone(&progress);
+                                        thread::spawn(move || {
+                                            let reader = BufReader::new(stdout);
+                                            for line in reader.lines().map_while(Result::ok) {
+                                                let t = line.trim();
+                                                if t.contains('|') {
+                                                    let parts: Vec<&str> = t.split('|').collect();
+                                                    if parts.len() >= 3
+                                                        && let Ok(mut p) = prog.lock()
+                                                    {
+                                                        *p = Some(format!(
+                                                            "{}  •  {}  •  ETA {}",
+                                                            parts[0].trim(),
+                                                            parts[1].trim(),
+                                                            parts[2].trim()
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            if let Ok(mut p) = prog.lock() {
+                                                *p = None;
+                                            }
+                                        });
+                                    }
+                                    let path = job.out_path.clone();
+                                    self.active_children.push(ActiveDownload {
+                                        child,
+                                        path,
+                                        title: job_title,
+                                        progress,
+                                        job,
+                                    });
+                                    continue;
+                                }
+                                Err(e) => {
+                                    let msg = format!("{job_title} ({e})");
+                                    log_error(&format!("İndirme başlatılamadı: {msg}"));
+                                    self.failed_titles.push(msg);
+                                }
+                            }
                         }
                     }
+                    Err(e) => {
+                        let msg = format!("{job_title} ({e})");
+                        log_error(&format!("İndirme linki alınamadı: {msg}"));
+                        self.failed_titles.push(msg);
+                    }
                 }
+            } else {
+                let job_title = format!("{} — {} (zaten var)", job.anime.title, job.episode.title);
+                self.completed_titles.push(job_title);
             }
             self.known_paths.remove(&job.out_path);
         }
@@ -328,6 +357,7 @@ impl DownloadManager {
                 .map(|j| format!("{} — {}", j.anime.title, j.episode.title))
                 .collect(),
             completed_titles: self.completed_titles.clone(),
+            failed_titles: self.failed_titles.clone(),
         }
     }
 }

@@ -25,6 +25,7 @@ pub struct AppBusStatus {
     pub active_items: Vec<(String, Option<String>)>,
     pub queued_titles: Vec<String>,
     pub completed_titles: Vec<String>,
+    pub failed_titles: Vec<String>,
 }
 
 struct EventBus {
@@ -64,6 +65,19 @@ fn init_bus() -> &'static EventBus {
                     }
                 }
 
+                if let Ok(mut st) = status_clone.lock() {
+                    let dl = dl_manager.status();
+                    st.queued_downloads = dl.queued;
+                    st.active_download = dl.active;
+                    st.download_paused = dl.paused;
+                    st.active_title = dl.active_title;
+                    st.active_progress = dl.active_progress;
+                    st.active_items = dl.active_items;
+                    st.queued_titles = dl.queued_titles;
+                    st.completed_titles = dl.completed_titles;
+                    st.failed_titles = dl.failed_titles;
+                }
+
                 dl_manager.tick();
 
                 if let Ok(mut st) = status_clone.lock() {
@@ -76,6 +90,7 @@ fn init_bus() -> &'static EventBus {
                     st.active_items = dl.active_items;
                     st.queued_titles = dl.queued_titles;
                     st.completed_titles = dl.completed_titles;
+                    st.failed_titles = dl.failed_titles;
                 }
 
                 thread::sleep(std::time::Duration::from_millis(150));
@@ -88,6 +103,14 @@ fn init_bus() -> &'static EventBus {
 
 pub fn emit(event: AppEvent) {
     let bus = init_bus();
+    if let AppEvent::EnqueueDownload(ref job) = event
+        && let Ok(mut st) = bus.status.lock()
+    {
+        st.queued_downloads += 1;
+        if st.queued_titles.len() < 8 {
+            st.queued_titles.push(format!("{} — {}", job.anime.title, job.episode.title));
+        }
+    }
     let _ = bus.tx.send(event);
 }
 

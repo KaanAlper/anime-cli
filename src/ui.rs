@@ -313,6 +313,7 @@ pub fn multi_select(
     cmd.args([
         "choose",
         "--no-limit",
+        "--show-help",
         "--cursor",
         "» ",
         "--cursor.foreground",
