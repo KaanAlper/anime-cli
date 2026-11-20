@@ -67,6 +67,9 @@ pub struct WatchData {
 pub trait AnimeSource: Send + Sync {
     #[allow(dead_code)]
     fn kind(&self) -> SourceKind;
+    fn list_all(&self) -> Result<Option<Vec<Anime>>> {
+        Ok(None)
+    }
     fn search(&self, query: &str) -> Result<Vec<Anime>>;
     fn get_episodes(&self, anime: &Anime) -> Result<Vec<Episode>>;
     fn get_watch_data(&self, anime: &Anime, episode: &Episode, ep_index_in_season: usize) -> Result<WatchData>;

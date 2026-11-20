@@ -391,24 +391,28 @@ fn watch_loop(
 }
 
 fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> {
-    let Some(query) = ui::input(
-        &format!("Anime Ara ({})", source_kind.display_name()),
-        "Anime adını yazın...",
-    )?
-    else {
-        return Ok(());
-    };
-
     let src = get_source(source_kind);
-    let results = match ui::with_spinner("Aranıyor...", || src.search(&query)) {
-        Ok(r) if !r.is_empty() => r,
-        Ok(_) => {
-            ui::show_error("Sonuç bulunamadı.");
-            return Ok(());
-        }
-        Err(e) => {
-            ui::show_error(&format!("Arama hatası: {e}"));
-            return Ok(());
+    let results = match ui::with_spinner("Katalog yükleniyor...", || src.list_all()) {
+        Ok(Some(all)) if !all.is_empty() => all,
+        _ => {
+            let Some(query) = ui::input(
+                &format!("Anime Ara ({})", source_kind.display_name()),
+                "Anime adını yazın...",
+            )?
+            else {
+                return Ok(());
+            };
+            match ui::with_spinner("Aranıyor...", || src.search(&query)) {
+                Ok(r) if !r.is_empty() => r,
+                Ok(_) => {
+                    ui::show_error("Sonuç bulunamadı.");
+                    return Ok(());
+                }
+                Err(e) => {
+                    ui::show_error(&format!("Arama hatası: {e}"));
+                    return Ok(());
+                }
+            }
         }
     };
 

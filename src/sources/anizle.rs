@@ -265,6 +265,26 @@ impl AnimeSource for Anizle {
         SourceKind::Anizle
     }
 
+    fn list_all(&self) -> Result<Option<Vec<Anime>>> {
+        let catalog = self.load_catalog()?;
+        let mut all = Vec::new();
+        for item in &catalog {
+            let title = item.get("info_title").and_then(|v| v.as_str()).unwrap_or("");
+            let slug = item.get("info_slug").and_then(|v| v.as_str()).unwrap_or("");
+            if title.is_empty() || slug.is_empty() {
+                continue;
+            }
+            all.push(Anime {
+                id: slug.to_string(),
+                title: title.to_string(),
+                source: SourceKind::Anizle,
+                is_movie: false,
+            });
+        }
+        all.sort_by_key(|a| a.title.to_lowercase());
+        Ok(Some(all))
+    }
+
     fn search(&self, query: &str) -> Result<Vec<Anime>> {
         let catalog = self.load_catalog()?;
         let q_norm = normalize_tr(query);

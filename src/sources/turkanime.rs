@@ -112,6 +112,35 @@ impl AnimeSource for TurkAnime {
         SourceKind::TurkAnime
     }
 
+    fn list_all(&self) -> Result<Option<Vec<Anime>>> {
+        let dizin = self.load_dizin()?;
+        let index = dizin
+            .get("index")
+            .and_then(|v| v.as_object())
+            .context("TürkAnime dizin formatı geçersiz")?;
+
+        let mut all = Vec::new();
+        for (_group, items) in index {
+            let Some(map) = items.as_object() else {
+                continue;
+            };
+            for (slug, info) in map {
+                let title = info
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(slug.as_str());
+                all.push(Anime {
+                    id: slug.clone(),
+                    title: title.to_string(),
+                    source: SourceKind::TurkAnime,
+                    is_movie: false,
+                });
+            }
+        }
+        all.sort_by_key(|a| a.title.to_lowercase());
+        Ok(Some(all))
+    }
+
     fn search(&self, query: &str) -> Result<Vec<Anime>> {
         let dizin = self.load_dizin()?;
         let index = dizin
