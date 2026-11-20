@@ -16,7 +16,7 @@ Rust ile yazılmış, terminal üzerinden Türkçe altyazılı anime arama ve iz
 
 ## Kurulum
 
-Gereksinimler: `rust`/`cargo`, `mpv`
+Gereksinimler: `rust`/`cargo`, `mpv`, `gum` (ve TürkAnime Arşiv embed linkleri için `yt-dlp`)
 
 ```bash
 cargo build --release
