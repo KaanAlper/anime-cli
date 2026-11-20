@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
+use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -171,8 +172,60 @@ pub fn show_error(msg: &str) {
     let _ = io::stdin().read_line(&mut buf);
 }
 
-pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
-    select_inner(title, subtitle, items, initial, false)
+struct RawTtyGuard {
+    saved_mode: Option<String>,
+}
+
+impl RawTtyGuard {
+    fn enter() -> Result<Self> {
+        let out = Command::new("stty")
+            .args(["-F", "/dev/tty", "-g"])
+            .output()
+            .context("stty okunamadı")?;
+        let saved_mode = if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        };
+        let _ = Command::new("stty")
+            .args(["-F", "/dev/tty", "raw", "-echo"])
+            .status();
+        Ok(Self { saved_mode })
+    }
+}
+
+impl Drop for RawTtyGuard {
+    fn drop(&mut self) {
+        if let Some(ref mode) = self.saved_mode {
+            let _ = Command::new("stty").args(["-F", "/dev/tty", mode]).status();
+        } else {
+            let _ = Command::new("stty")
+                .args(["-F", "/dev/tty", "sane"])
+                .status();
+        }
+        let _ = io::stdout().write_all(b"\x1b[?25h\r\n");
+        let _ = io::stdout().flush();
+    }
+}
+
+fn highlight_non_selected_match(text: &str, query: &str) -> String {
+    if query.is_empty() {
+        return format!("\x1b[38;2;255;255;255m{text}\x1b[0m");
+    }
+    let lower_t = text.to_lowercase();
+    let lower_q = query.to_lowercase();
+    if let Some(byte_start) = lower_t.find(&lower_q) {
+        let byte_end = (byte_start + lower_q.len()).min(text.len());
+        if text.is_char_boundary(byte_start) && text.is_char_boundary(byte_end) {
+            let before = &text[..byte_start];
+            let matched = &text[byte_start..byte_end];
+            let after = &text[byte_end..];
+            return format!(
+                "\x1b[38;2;255;255;255m{before}\x1b[38;2;139;178;127m{matched}\x1b[38;2;255;255;255m{after}\x1b[0m"
+            );
+        }
+    }
+    format!("\x1b[38;2;255;255;255m{text}\x1b[0m")
 }
 
 pub fn select_highlighted(
@@ -181,16 +234,170 @@ pub fn select_highlighted(
     items: &[String],
     initial: usize,
 ) -> Result<Option<usize>> {
-    select_inner(title, subtitle, items, initial, true)
+    let clean_items: Vec<(usize, &String)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.trim().is_empty())
+        .collect();
+    if clean_items.is_empty() {
+        return Ok(None);
+    }
+
+    print_header(title, subtitle);
+
+    let mut tty = fs::OpenOptions::new()
+        .read(true)
+        .open("/dev/tty")
+        .context("/dev/tty açılamadı")?;
+    let _guard = RawTtyGuard::enter()?;
+
+    let mut query = String::new();
+    let mut cursor = initial.min(clean_items.len().saturating_sub(1));
+    let mut scroll = 0usize;
+    let max_vis = 15usize;
+    let total_rows = max_vis + 2; // prompt + items + help
+    let mut first_draw = true;
+
+    let mut stdout = io::stdout();
+    let _ = stdout.write_all(b"\x1b[?25l");
+
+    loop {
+        let q_lower = query.to_lowercase();
+        let filtered: Vec<(usize, &String, i32)> = if q_lower.is_empty() {
+            clean_items.iter().map(|&(i, s)| (i, s, 0)).collect()
+        } else {
+            let words: Vec<&str> = q_lower.split_whitespace().collect();
+            let mut matched: Vec<(usize, &String, i32)> = clean_items
+                .iter()
+                .filter_map(|&(i, s)| {
+                    let sl = s.to_lowercase();
+                    if sl.starts_with(&q_lower) {
+                        Some((i, s, 0))
+                    } else if sl.contains(&q_lower) {
+                        Some((i, s, 1))
+                    } else if words.iter().all(|w| sl.contains(w)) {
+                        Some((i, s, 2))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            matched.sort_by_key(|&(_, _, score)| score);
+            matched
+        };
+
+        if filtered.is_empty() {
+            cursor = 0;
+            scroll = 0;
+        } else {
+            cursor = cursor.min(filtered.len() - 1);
+            if cursor < scroll {
+                scroll = cursor;
+            } else if cursor >= scroll + max_vis {
+                scroll = cursor + 1 - max_vis;
+            }
+        }
+
+        let mut buf = String::with_capacity(2048);
+        if !first_draw {
+            let _ = write!(buf, "\x1b[{total_rows}A\r");
+        }
+        first_draw = false;
+
+        if query.is_empty() {
+            let _ = write!(
+                buf,
+                "\x1b[38;2;196;180;139m> \x1b[38;2;136;153;170mFiltrele...\x1b[0m\x1b[K\r\n"
+            );
+        } else {
+            let _ = write!(
+                buf,
+                "\x1b[38;2;196;180;139m> \x1b[38;2;255;255;255m{query}\x1b[48;2;244;214;236m \x1b[0m\x1b[K\r\n"
+            );
+        }
+
+        for row in 0..max_vis {
+            let idx = scroll + row;
+            if let Some(&(_, item, _)) = filtered.get(idx) {
+                if idx == cursor {
+                    let _ = write!(
+                        buf,
+                        "\x1b[38;2;228;92;192m» \x1b[48;2;244;214;236;38;2;0;0;0;1m {item} \x1b[0m\x1b[K\r\n"
+                    );
+                } else {
+                    let rendered = highlight_non_selected_match(item, &query);
+                    let _ = write!(buf, "   {rendered}\x1b[K\r\n");
+                }
+            } else if row == 0 && filtered.is_empty() {
+                let _ = write!(buf, "   \x1b[38;2;136;153;170m(Eşleşme yok)\x1b[0m\x1b[K\r\n");
+            } else {
+                buf.push_str("\x1b[K\r\n");
+            }
+        }
+
+        let _ = write!(
+            buf,
+            "\x1b[38;2;102;102;102m↑↓ gezin • yazarak filtrele • enter seç • esc geri\x1b[0m\x1b[K\r\n"
+        );
+
+        let _ = stdout.write_all(buf.as_bytes());
+        let _ = stdout.flush();
+
+        let mut b = [0u8; 16];
+        let n = tty.read(&mut b)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let slice = &b[..n];
+        if slice == [3] || slice == [27] {
+            return Ok(None);
+        }
+        if slice == [13] || slice == [10] {
+            return Ok(filtered.get(cursor).map(|&(orig_idx, _, _)| orig_idx));
+        }
+        if slice == [127] || slice == [8] {
+            query.pop();
+            cursor = 0;
+            scroll = 0;
+            continue;
+        }
+        if slice.starts_with(b"\x1b[A") || slice.starts_with(b"\x1bOA") {
+            cursor = cursor.saturating_sub(1);
+            continue;
+        }
+        if slice.starts_with(b"\x1b[B") || slice.starts_with(b"\x1bOB") {
+            if !filtered.is_empty() {
+                cursor = (cursor + 1).min(filtered.len() - 1);
+            }
+            continue;
+        }
+        if slice.starts_with(b"\x1b[5~") {
+            cursor = cursor.saturating_sub(max_vis);
+            continue;
+        }
+        if slice.starts_with(b"\x1b[6~") {
+            if !filtered.is_empty() {
+                cursor = (cursor + max_vis).min(filtered.len() - 1);
+            }
+            continue;
+        }
+        if let Ok(s) = std::str::from_utf8(slice) {
+            let mut changed = false;
+            for ch in s.chars() {
+                if !ch.is_control() {
+                    query.push(ch);
+                    changed = true;
+                }
+            }
+            if changed {
+                cursor = 0;
+                scroll = 0;
+            }
+        }
+    }
 }
 
-fn select_inner(
-    title: &str,
-    subtitle: &str,
-    items: &[String],
-    initial: usize,
-    highlight: bool,
-) -> Result<Option<usize>> {
+pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
     let clean_items: Vec<(usize, &String)> = items
         .iter()
         .enumerate()
@@ -208,14 +415,9 @@ fn select_inner(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let use_filter = highlight || clean_items.len() > 8;
+    let use_filter = clean_items.len() > 8;
     let mut cmd = Command::new("gum");
     if use_filter {
-        let (cursor_fg, cursor_bg, match_fg) = if highlight {
-            ("#000000", "#f4d6ec", "#8bb27f")
-        } else {
-            ("#e45cc0", "", "#8bb27f")
-        };
         cmd.args([
             "filter",
             "--placeholder",
@@ -231,13 +433,11 @@ fn select_inner(
             "--unselected-prefix",
             "",
             "--cursor-text.foreground",
-            cursor_fg,
-            "--cursor-text.background",
-            cursor_bg,
+            "#e45cc0",
             "--text.foreground",
             "#ffffff",
             "--match.foreground",
-            match_fg,
+            "#8bb27f",
             "--prompt.foreground",
             "#c4b48b",
             "--height",
