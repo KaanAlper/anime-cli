@@ -240,7 +240,7 @@ pub fn play_mpv(
     if is_hls {
         cmd.arg("--demuxer=lavf")
             .arg("--demuxer-lavf-format=hls")
-            .arg("--demuxer-lavf-o=allowed_extensions=ALL");
+            .arg("--demuxer-lavf-o=allowed_extensions=ALL,http_keep_alive=0,http_persistent=0");
     }
     if resolved_embed {
         cmd.arg("--ytdl=no");
