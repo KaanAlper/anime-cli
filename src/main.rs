@@ -519,26 +519,19 @@ fn download_indices(
 
 fn show_download_status(cfg: &AppConfig) {
     let _ = player::take_interrupted();
-    loop {
-        print!("\x1b[2J\x1b[H");
-        let _ = std::process::Command::new("gum")
-            .args([
-                "style",
-                "--border",
-                "rounded",
-                "--border-foreground",
-                "#e45cc0",
-                "--padding",
-                "0 2",
-                "--margin",
-                "0 0 1 0",
-                &format!(
-                    "\x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m\n\x1b[38;2;136;153;170mKlasör: {}\x1b[0m",
-                    cfg.download_dir
-                ),
-            ])
-            .status();
+    print!("\x1b[2J\x1b[H\x1b[?25l");
+    let dir_line = format!("Klasör: {}", cfg.download_dir);
+    let box_w = dir_line.chars().count().max(24) + 4;
+    let border = "─".repeat(box_w);
+    let title_pad = " ".repeat(box_w.saturating_sub("✦ İndirme Yöneticisi".chars().count() + 2));
+    let dir_pad = " ".repeat(box_w.saturating_sub(dir_line.chars().count() + 2));
+    println!("\x1b[38;2;228;92;192m╭{border}╮\x1b[0m");
+    println!("\x1b[38;2;228;92;192m│\x1b[0m \x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m{title_pad} \x1b[38;2;228;92;192m│\x1b[0m");
+    println!("\x1b[38;2;228;92;192m│\x1b[0m \x1b[38;2;136;153;170m{dir_line}\x1b[0m{dir_pad} \x1b[38;2;228;92;192m│\x1b[0m");
+    println!("\x1b[38;2;228;92;192m╰{border}╯\x1b[0m\n");
 
+    loop {
+        print!("\x1b[6;1H");
         let st = bus::status();
         if !st.active_items.is_empty() {
             let icon = if st.download_paused {
@@ -551,43 +544,51 @@ fn show_download_status(cfg: &AppConfig) {
                     .as_deref()
                     .map(|p| format!("  \x1b[38;2;139;178;127m[{p}]\x1b[0m"))
                     .unwrap_or_default();
-                println!("  {icon}  {active}{prog}");
+                println!("  {icon}  {active}{prog}\x1b[K");
             }
-        } else if st.queued_downloads == 0 && st.completed_titles.is_empty() {
-            println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m");
+        } else if st.queued_downloads == 0
+            && st.completed_titles.is_empty()
+            && st.failed_titles.is_empty()
+        {
+            println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m\x1b[K");
         }
 
         for q in &st.queued_titles {
-            println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}");
+            println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}\x1b[K");
         }
         if st.queued_downloads > st.queued_titles.len() {
             println!(
-                "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m",
+                "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m\x1b[K",
                 st.queued_downloads - st.queued_titles.len()
             );
         }
         for done in &st.completed_titles {
-            println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}");
+            println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}\x1b[K");
         }
         for fail in &st.failed_titles {
-            println!("  \x1b[38;2;255;95;95m✖ Başarısız\x1b[0m    {fail}");
+            println!("  \x1b[38;2;255;95;95m✖ Başarısız\x1b[0m    {fail}\x1b[K");
         }
 
+        print!("\x1b[J");
         if !st.active_download && st.queued_downloads == 0 {
+            print!("\x1b[?25h");
             println!("\n\x1b[38;2;102;102;102mMenüye dönmek için Enter'a basın...\x1b[0m");
             let mut buf = String::new();
             let _ = std::io::stdin().read_line(&mut buf);
             break;
         }
 
-        println!("\n\x1b[38;2;102;102;102mCanlı güncelleniyor... Menüye dönmek için Ctrl+C basın (indirme arkada devam eder)\x1b[0m");
+        println!("\n\x1b[38;2;102;102;102mCanlı güncelleniyor... Menüye dönmek için Ctrl+C basın (indirme arkada devam eder)\x1b[0m\x1b[K");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
         for _ in 0..5 {
             if player::take_interrupted() {
+                print!("\x1b[?25h");
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
+    print!("\x1b[?25h");
 }
 
 fn download_menu(

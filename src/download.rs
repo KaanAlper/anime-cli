@@ -51,6 +51,14 @@ pub fn target_file_path(download_dir: &str, anime_title: &str, ep_title: &str) -
     dir.join(format!("{}.mp4", sanitize_name(ep_title)))
 }
 
+fn is_hls_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains(".m3u8")
+        || lower.contains("/m3/")
+        || lower.contains("master.txt")
+        || lower.contains("puffytr")
+}
+
 fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> Result<Command> {
     let ytdlp = if has_command("yt-dlp") {
         "yt-dlp"
@@ -61,11 +69,6 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> 
     };
 
     let mut cmd = Command::new(ytdlp);
-    let referer = stream
-        .referer
-        .as_deref()
-        .unwrap_or("https://yeshi.eu.org/");
-
     cmd.arg("--no-part")
         .arg("--no-playlist")
         .arg("--newline")
@@ -73,21 +76,23 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> 
         .arg("--no-warnings")
         .arg("--progress-template")
         .arg("download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
-        .arg("--referer")
-        .arg(referer)
         .arg("--user-agent")
         .arg("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
 
-    if use_aria2c && has_command("aria2c") {
-        cmd.arg("--downloader")
-            .arg("aria2c")
-            .arg("--downloader-args")
-            .arg("aria2c:-x 8 -s 8 -k 1M");
-    } else {
+    if let Some(referer) = stream.referer.as_deref().filter(|r| !r.is_empty()) {
+        cmd.arg("--referer").arg(referer);
+    }
+
+    if is_hls_url(&stream.url) {
         cmd.arg("--downloader")
             .arg("ffmpeg")
             .arg("--downloader-args")
             .arg("ffmpeg_i:-allowed_extensions ALL");
+    } else if use_aria2c && has_command("aria2c") {
+        cmd.arg("--downloader")
+            .arg("aria2c")
+            .arg("--downloader-args")
+            .arg("aria2c:-x 8 -s 8 -k 1M");
     }
 
     cmd.arg("-o")
@@ -95,7 +100,7 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> 
         .arg(&stream.url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
 
     Ok(cmd)
 }
@@ -150,6 +155,7 @@ struct ActiveDownload {
     path: PathBuf,
     title: String,
     progress: Arc<Mutex<Option<String>>>,
+    last_err: Arc<Mutex<Option<String>>>,
     job: DownloadJob,
 }
 
@@ -218,7 +224,13 @@ impl DownloadManager {
                             self.completed_titles.remove(0);
                         }
                     } else {
-                        let msg = format!("{} (yt-dlp çıkış kodu: {:?})", act.title, st.code());
+                        let detail = act
+                            .last_err
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .unwrap_or_else(|| format!("yt-dlp çıkış kodu: {:?}", st.code()));
+                        let msg = format!("{} ({detail})", act.title);
                         log_error(&format!("İndirme başarısız: {msg}"));
                         self.failed_titles.push(msg);
                     }
@@ -276,6 +288,7 @@ impl DownloadManager {
                                 Ok(mut child) => {
                                     let progress =
                                         Arc::new(Mutex::new(Some("Başlatılıyor...".to_string())));
+                                    let last_err = Arc::new(Mutex::new(None));
                                     if let Some(stdout) = child.stdout.take() {
                                         let prog = Arc::clone(&progress);
                                         thread::spawn(move || {
@@ -301,12 +314,27 @@ impl DownloadManager {
                                             }
                                         });
                                     }
+                                    if let Some(stderr) = child.stderr.take() {
+                                        let err_arc = Arc::clone(&last_err);
+                                        thread::spawn(move || {
+                                            let reader = BufReader::new(stderr);
+                                            for line in reader.lines().map_while(Result::ok) {
+                                                let t = line.trim();
+                                                if !t.is_empty()
+                                                    && let Ok(mut e) = err_arc.lock()
+                                                {
+                                                    *e = Some(t.chars().take(90).collect());
+                                                }
+                                            }
+                                        });
+                                    }
                                     let path = job.out_path.clone();
                                     self.active_children.push(ActiveDownload {
                                         child,
                                         path,
                                         title: job_title,
                                         progress,
+                                        last_err,
                                         job,
                                     });
                                     continue;
