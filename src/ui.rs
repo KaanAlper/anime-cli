@@ -31,6 +31,7 @@ fn term_logo_path() -> Option<&'static PathBuf> {
                     .args(["-w", "340", "-o"])
                     .arg(&png_path)
                     .arg(&svg_path)
+                    .stderr(Stdio::null())
                     .status()
                     .is_ok_and(|s| s.success())
                 {
@@ -94,6 +95,7 @@ fn print_header(title: &str, subtitle: &str) {
         let _ = Command::new("kitten")
             .args(["icat", "--align", "left", "--stdin", "no"])
             .arg(logo)
+            .stderr(Stdio::null())
             .status();
     }
     let mut lines = vec![format!("\x1b[1;38;2;228;92;192m✦ {title}\x1b[0m")];
