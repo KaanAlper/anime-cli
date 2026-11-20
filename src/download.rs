@@ -110,6 +110,9 @@ pub struct DownloadStatus {
     pub queued: usize,
     pub active: bool,
     pub paused: bool,
+    pub active_title: Option<String>,
+    pub queued_titles: Vec<String>,
+    pub completed_titles: Vec<String>,
 }
 
 fn signal_pid(pid: u32, sig: &str) {
@@ -123,7 +126,8 @@ fn signal_pid(pid: u32, sig: &str) {
 pub struct DownloadManager {
     queue: VecDeque<DownloadJob>,
     known_paths: HashSet<PathBuf>,
-    active_child: Option<(Child, PathBuf)>,
+    active_child: Option<(Child, PathBuf, String)>,
+    completed_titles: Vec<String>,
     playback_depth: usize,
 }
 
@@ -133,6 +137,7 @@ impl DownloadManager {
             queue: VecDeque::new(),
             known_paths: HashSet::new(),
             active_child: None,
+            completed_titles: Vec::new(),
             playback_depth: 0,
         }
     }
@@ -146,7 +151,7 @@ impl DownloadManager {
     pub fn on_playback_started(&mut self) {
         self.playback_depth += 1;
         if self.playback_depth == 1
-            && let Some((ref child, _)) = self.active_child
+            && let Some((ref child, _, _)) = self.active_child
         {
             signal_pid(child.id(), "-STOP");
         }
@@ -155,20 +160,29 @@ impl DownloadManager {
     pub fn on_playback_ended(&mut self) {
         self.playback_depth = self.playback_depth.saturating_sub(1);
         if self.playback_depth == 0
-            && let Some((ref child, _)) = self.active_child
+            && let Some((ref child, _, _)) = self.active_child
         {
             signal_pid(child.id(), "-CONT");
         }
     }
 
     pub fn tick(&mut self) {
-        if let Some((mut child, path)) = self.active_child.take() {
+        if let Some((mut child, path, title)) = self.active_child.take() {
             match child.try_wait() {
-                Ok(Some(_)) | Err(_) => {
+                Ok(Some(st)) => {
                     self.known_paths.remove(&path);
+                    if st.success() {
+                        self.completed_titles.push(title);
+                        if self.completed_titles.len() > 10 {
+                            self.completed_titles.remove(0);
+                        }
+                    }
                 }
                 Ok(None) => {
-                    self.active_child = Some((child, path));
+                    self.active_child = Some((child, path, title));
+                }
+                Err(_) => {
+                    self.known_paths.remove(&path);
                 }
             }
         }
@@ -200,7 +214,8 @@ impl DownloadManager {
                         if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
                             && let Ok(child) = cmd.spawn()
                         {
-                            self.active_child = Some((child, job.out_path));
+                            let title = format!("{} — {}", job.anime.title, job.episode.title);
+                            self.active_child = Some((child, job.out_path, title));
                             return;
                         }
                     }
@@ -215,6 +230,14 @@ impl DownloadManager {
             queued: self.queue.len(),
             active: self.active_child.is_some(),
             paused: self.playback_depth > 0 && self.active_child.is_some(),
+            active_title: self.active_child.as_ref().map(|(_, _, t)| t.clone()),
+            queued_titles: self
+                .queue
+                .iter()
+                .take(8)
+                .map(|j| format!("{} — {}", j.anime.title, j.episode.title))
+                .collect(),
+            completed_titles: self.completed_titles.clone(),
         }
     }
 }

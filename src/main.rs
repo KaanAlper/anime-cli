@@ -447,18 +447,15 @@ fn resume_last(cfg: &mut AppConfig) -> Result<()> {
     watch_loop(cfg, &anime, &episodes, idx)
 }
 
-fn download_range(
+fn download_indices(
     cfg: &AppConfig,
     anime: &Anime,
     episodes: &[Episode],
-    start_idx: usize,
-    end_idx: usize,
+    indices: &[usize],
     manual_quality: Option<&str>,
 ) {
     let q_pref = manual_quality.unwrap_or(&cfg.preferred_quality);
-    let total = end_idx - start_idx + 1;
-
-    for idx in start_idx..=end_idx {
+    for &idx in indices {
         let ep = &episodes[idx];
         let ep_in_season = episodes[..idx]
             .iter()
@@ -474,11 +471,40 @@ fn download_range(
         }));
     }
 
-    println!(
-        "\n\x1b[38;2;139;178;127m✔\x1b[0m {total} bölüm indirme kuyruğuna eklendi -> {}",
-        cfg.download_dir
-    );
-    println!("\x1b[38;2;102;102;102mİzlerken otomatik duraklar, bitince devam eder. Enter'a basın...\x1b[0m");
+    show_download_status(cfg);
+}
+
+fn show_download_status(cfg: &AppConfig) {
+    print!("\x1b[2J\x1b[H");
+    println!("\x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m");
+    println!("\x1b[3;38;2;102;102;102m  Klasör: {}\x1b[0m\n", cfg.download_dir);
+
+    let st = bus::status();
+    if let Some(ref active) = st.active_title {
+        let icon = if st.download_paused {
+            "\x1b[38;2;196;180;139m⏸ Duraklatıldı\x1b[0m"
+        } else {
+            "\x1b[38;2;228;92;192m⬇ İndiriliyor\x1b[0m"
+        };
+        println!("  {icon}  {active}");
+    } else if st.queued_downloads == 0 && st.completed_titles.is_empty() {
+        println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m");
+    }
+
+    for q in &st.queued_titles {
+        println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}");
+    }
+    if st.queued_downloads > st.queued_titles.len() {
+        println!(
+            "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m",
+            st.queued_downloads - st.queued_titles.len()
+        );
+    }
+    for done in &st.completed_titles {
+        println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}");
+    }
+
+    println!("\n\x1b[38;2;102;102;102mİzlerken otomatik duraklar, bitince devam eder. Enter'a basın...\x1b[0m");
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);
 }
@@ -491,12 +517,13 @@ fn download_menu(
     manual_quality: Option<&str>,
 ) -> Result<()> {
     if anime.is_movie || episodes.len() == 1 {
-        download_range(cfg, anime, episodes, 0, 0, manual_quality);
+        download_indices(cfg, anime, episodes, &[0], manual_quality);
         return Ok(());
     }
 
     let options = vec![
         format!("Bu bölümü indir ({})", episodes[ep_idx].title),
+        "Bölüm seçerek indir (Space ile)".to_string(),
         format!("Hepsini indir (1-{})", episodes.len()),
         "Bölüm aralığı indir (ör. 5-12)".to_string(),
         "Geri".to_string(),
@@ -513,23 +540,39 @@ fn download_menu(
     };
 
     match choice {
-        0 => download_range(cfg, anime, episodes, ep_idx, ep_idx, manual_quality),
-        1 => download_range(
-            cfg,
-            anime,
-            episodes,
-            0,
-            episodes.len().saturating_sub(1),
-            manual_quality,
-        ),
+        0 => download_indices(cfg, anime, episodes, &[ep_idx], manual_quality),
+        1 => {
+            let titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
+            if let Some(picked) = ui::multi_select(
+                "Bölümleri Seç (Space ile işaretle, Enter ile indir)",
+                &anime.title,
+                &titles,
+                &[],
+            )? {
+                let indices: Vec<usize> = episodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| picked.contains(&e.title))
+                    .map(|(i, _)| i)
+                    .collect();
+                if !indices.is_empty() {
+                    download_indices(cfg, anime, episodes, &indices, manual_quality);
+                }
+            }
+        }
         2 => {
+            let all: Vec<usize> = (0..episodes.len()).collect();
+            download_indices(cfg, anime, episodes, &all, manual_quality);
+        }
+        3 => {
             if let Some(range_str) = ui::input(
                 &format!("Bölüm Aralığı (1-{})", episodes.len()),
                 "ör. 5-12 veya 5",
             )? {
                 match download::parse_episode_range(&range_str, episodes.len()) {
                     Ok((start, end)) => {
-                        download_range(cfg, anime, episodes, start, end, manual_quality);
+                        let range: Vec<usize> = (start..=end).collect();
+                        download_indices(cfg, anime, episodes, &range, manual_quality);
                     }
                     Err(e) => ui::show_error(&format!("{e}")),
                 }
@@ -682,6 +725,7 @@ fn main() -> Result<()> {
         }
         menu.extend([
             "Kaynak Değiştir".into(),
+            "İndirme Durumu".into(),
             "Ayarlar".into(),
             "Çık".into(),
         ]);
@@ -740,6 +784,8 @@ fn main() -> Result<()> {
                 cfg.default_source = kind.display_name().to_string();
                 let _ = save_config(&cfg);
             }
+        } else if choice == "İndirme Durumu" {
+            show_download_status(&cfg);
         } else if choice == "Ayarlar" {
             let _ = settings_menu(&mut cfg, &mut active_source);
         } else {

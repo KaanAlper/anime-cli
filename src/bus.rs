@@ -20,6 +20,9 @@ pub struct AppBusStatus {
     pub queued_downloads: usize,
     pub active_download: bool,
     pub download_paused: bool,
+    pub active_title: Option<String>,
+    pub queued_titles: Vec<String>,
+    pub completed_titles: Vec<String>,
 }
 
 struct EventBus {
@@ -66,6 +69,9 @@ fn init_bus() -> &'static EventBus {
                     st.queued_downloads = dl.queued;
                     st.active_download = dl.active;
                     st.download_paused = dl.paused;
+                    st.active_title = dl.active_title;
+                    st.queued_titles = dl.queued_titles;
+                    st.completed_titles = dl.completed_titles;
                 }
 
                 thread::sleep(std::time::Duration::from_millis(150));
