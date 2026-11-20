@@ -1,6 +1,7 @@
 mod bus;
 mod config;
 mod download;
+mod hls_proxy;
 mod models;
 mod player;
 mod sources;

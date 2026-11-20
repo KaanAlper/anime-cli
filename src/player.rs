@@ -4,6 +4,7 @@ use std::env;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::hls_proxy;
 use crate::models::StreamOption;
 
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -221,8 +222,54 @@ pub fn play_mpv(
         let lower = target_url.to_ascii_lowercase();
         lower.contains(".m3u8")
             || lower.contains("/mn/")
+            || lower.contains("/m3/")
             || lower.contains("master.txt")
             || lower.contains("puffytr")
+    };
+
+    // For HLS streams, start a local .ts slice proxy + Lua seek-fallback script so
+    // forward seeks past PTS wraparound (e.g. st.puffytr.tr) reload cleanly.
+    let mut _proxy_guard = None;
+    let mut lua_cleanup: Option<std::path::PathBuf> = None;
+    let play_url = if is_hls {
+        if let Ok(proxy) = hls_proxy::start_hls_proxy(&target_url, stream.referer.as_deref()) {
+            let port = proxy.port;
+            let lua_path = std::env::temp_dir().join(format!("anime_hls_seek_{}.lua", port));
+            let lua_code = format!(
+                r#"local base = "http://127.0.0.1:{port}/from/"
+local offset = 0
+local ignoring = false
+local timer = nil
+mp.register_event("seek", function()
+    if ignoring then return end
+    local pos = mp.get_property_number("time-pos")
+    if not pos then return end
+    if timer then timer:kill() end
+    timer = mp.add_timeout(0.7, function()
+        if mp.get_property_bool("paused-for-cache") or mp.get_property_bool("seeking") then
+            ignoring = true
+            local abs_sec = math.max(0, math.floor(offset + pos))
+            offset = abs_sec
+            mp.osd_message(string.format("⏩ Sarılıyor: %02d:%02d", math.floor(abs_sec / 60), abs_sec % 60), 2)
+            mp.commandv("loadfile", base .. abs_sec .. ".m3u8", "replace")
+            mp.add_timeout(1.5, function() ignoring = false end)
+        end
+    end)
+end)
+"#
+            );
+            if std::fs::write(&lua_path, lua_code).is_ok() {
+                lua_cleanup = Some(lua_path);
+                _proxy_guard = Some(proxy);
+                format!("http://127.0.0.1:{port}/from/0.m3u8")
+            } else {
+                target_url.clone()
+            }
+        } else {
+            target_url.clone()
+        }
+    } else {
+        target_url.clone()
     };
 
     let mut cmd = Command::new("mpv");
@@ -238,7 +285,9 @@ pub fn play_mpv(
         .arg("--demuxer-max-back-bytes=100MiB")
         .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5");
 
-    if is_hls {
+    if let Some(ref lua_path) = lua_cleanup {
+        cmd.arg(format!("--script={}", lua_path.display()));
+    } else if is_hls {
         cmd.arg("--demuxer=lavf")
             .arg("--demuxer-lavf-format=hls")
             .arg("--demuxer-lavf-o=allowed_extensions=ALL,http_keep_alive=0,http_persistent=0");
@@ -257,6 +306,7 @@ pub fn play_mpv(
 
     if let Some(referer) = stream.referer.as_deref()
         && !referer.is_empty()
+        && _proxy_guard.is_none()
     {
         cmd.arg(format!("--referrer={referer}"));
     }
@@ -267,11 +317,15 @@ pub fn play_mpv(
         cmd.arg(format!("--sub-file={sub}"));
     }
 
-    cmd.arg(&target_url);
+    cmd.arg(&play_url);
 
     let status = cmd
         .status()
         .context("mpv başlatılamadı (sisteminizde mpv yüklü mü?)")?;
+
+    if let Some(ref lua_path) = lua_cleanup {
+        let _ = std::fs::remove_file(lua_path);
+    }
 
     if take_interrupted() || status.code().is_none() {
         return Ok(());
