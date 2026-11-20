@@ -12,7 +12,9 @@ use crate::config::{
     AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config, save_history_entry,
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
-use crate::player::{pick_preferred_stream_index, play_mpv};
+use crate::player::{
+    has_ytdlp, is_direct_stream_url, pick_preferred_stream_index, play_mpv,
+};
 use crate::sources::get_source;
 
 #[derive(Parser, Debug)]
@@ -88,6 +90,31 @@ fn watch_loop(
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
                         let stream_idx = pick_preferred_stream_index(&watch.streams, q_pref);
                         let stream = &watch.streams[stream_idx];
+
+                        if !is_direct_stream_url(&stream.url) && !has_ytdlp() {
+                            let choices = vec![
+                                "Evet, 'sudo pacman -S yt-dlp' ile kur".to_string(),
+                                "Hayır, vazgeç".to_string(),
+                            ];
+                            let picked = ui::select(
+                                "yt-dlp kurulu değil",
+                                "Bu kaynak embed oynatıcı kullanıyor; izlemek için yt-dlp gerekli.",
+                                &choices,
+                                0,
+                            )?;
+                            if picked == Some(0) {
+                                let status = std::process::Command::new("sudo")
+                                    .args(["pacman", "-S", "yt-dlp"])
+                                    .status();
+                                if !matches!(status, Ok(s) if s.success()) {
+                                    ui::show_error("yt-dlp kurulumu tamamlanamadı.");
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
+
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
                         if let Err(e) = play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title)
                         {

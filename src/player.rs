@@ -1,8 +1,33 @@
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use std::env;
 use std::process::Command;
 
 use crate::models::StreamOption;
+
+pub fn has_command(name: &str) -> bool {
+    if let Some(paths) = env::var_os("PATH") {
+        for dir in env::split_paths(&paths) {
+            let full = dir.join(name);
+            if full.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn has_ytdlp() -> bool {
+    has_command("yt-dlp") || has_command("youtube-dl")
+}
+
+pub fn is_direct_stream_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains(".mp4")
+        || lower.contains(".m3u8")
+        || lower.contains("/mn/")
+        || lower.contains("master.txt")
+}
 
 pub fn extract_resolution_score(label: &str) -> u32 {
     let re = Regex::new(r"(\d{3,4})\s*p?").unwrap();
