@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/KaanAlper/anime-cli.git"
-RELEASE_BIN_URL="https://github.com/KaanAlper/anime-cli/releases/latest/download/anime-linux-x86_64"
+RELEASE_BIN_URL="https://github.com/KaanAlper/anime-cli/releases/latest/download/anime"
 INSTALL_DIR="$HOME/.local/bin"
 BIN_PATH="$INSTALL_DIR/anime"
 

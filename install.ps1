@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $RepoUrl = "https://github.com/KaanAlper/anime-cli.git"
-$ReleaseBinUrl = "https://github.com/KaanAlper/anime-cli/releases/latest/download/anime-windows-x86_64.exe"
+$ReleaseBinUrl = "https://github.com/KaanAlper/anime-cli/releases/latest/download/anime.exe"
 $InstallDir = Join-Path $env:LOCALAPPDATA "anime-cli"
 $BinPath = Join-Path $InstallDir "anime.exe"
 

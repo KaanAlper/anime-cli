@@ -45,7 +45,7 @@ irm https://raw.githubusercontent.com/KaanAlper/anime-cli/main/install.ps1 | iex
 **Hazır İkili / Taşınabilir `.exe` Paketi (Kurulum Gerektirmez):**
 [GitHub Releases](https://github.com/KaanAlper/anime-cli/releases/latest) sayfasından:
 - **Windows (Hepsi İçinde Taşınabilir ZIP):** `anime-windows-x86_64-bundle.zip` (`anime.exe` + `mpv` + `yt-dlp` + `ffmpeg` + `gum` dahil — indirip çıkarın ve `anime.exe`ye tıklayın)
-- **Tek Dosya:** `anime-windows-x86_64.exe` veya `anime-linux-x86_64` (ilk açılışta eksik bağımlılıklar otomatik kurulur)
+- **Tek Dosya:** `anime.exe` (Windows) veya `anime` (Linux) — ilk açılışta eksik bağımlılıklar otomatik kurulur
 
 ### `git clone` ile Kurulum
 
