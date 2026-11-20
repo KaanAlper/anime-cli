@@ -25,22 +25,24 @@ fn format_episode_choices(
     anime: &Anime,
     episodes: &[Episode],
     show_icon: bool,
-    for_download: bool,
+    _for_download: bool,
 ) -> (Vec<String>, usize) {
     let (watched, last) = watched_for_anime(anime.source.display_name(), &anime.id);
-    let marked = if for_download {
-        downloaded_for_anime(anime.source.display_name(), &anime.id)
-    } else {
-        watched
-    };
+    let downloaded = downloaded_for_anime(anime.source.display_name(), &anime.id);
     let titles = episodes
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            if show_icon && marked.contains(&i) {
-                format!("{} ●", e.title)
-            } else {
-                e.title.clone()
+            if !show_icon {
+                return e.title.clone();
+            }
+            let is_w = watched.contains(&i);
+            let is_d = downloaded.contains(&i);
+            match (is_w, is_d) {
+                (true, true) => format!("{} ✓✓ ⬇", e.title),
+                (true, false) => format!("{} ✓✓", e.title),
+                (false, true) => format!("{} ⬇", e.title),
+                (false, false) => e.title.clone(),
             }
         })
         .collect();

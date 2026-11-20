@@ -203,8 +203,6 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
             "--indicator.foreground",
             "#e45cc0",
             "--cursor-text.foreground",
-            "#1a1622",
-            "--cursor-text.background",
             "#f4d6ec",
             "--text.foreground",
             "#aabbcc",
