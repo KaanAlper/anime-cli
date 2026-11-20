@@ -211,10 +211,10 @@ fn select_inner(
     let use_filter = highlight || clean_items.len() > 8;
     let mut cmd = Command::new("gum");
     if use_filter {
-        let (cursor_fg, cursor_bg) = if highlight {
-            ("#1a1622", "#f4d6ec")
+        let (cursor_fg, cursor_bg, match_fg) = if highlight {
+            ("#000000", "#f4d6ec", "#000000")
         } else {
-            ("#e45cc0", "")
+            ("#e45cc0", "", "#e45cc0")
         };
         cmd.args([
             "filter",
@@ -226,14 +226,18 @@ fn select_inner(
             "» ",
             "--indicator.foreground",
             "#e45cc0",
+            "--selected-prefix",
+            "",
+            "--unselected-prefix",
+            "",
             "--cursor-text.foreground",
             cursor_fg,
             "--cursor-text.background",
             cursor_bg,
             "--text.foreground",
-            "#8899aa",
+            "#ffffff",
             "--match.foreground",
-            "#c4b48b",
+            match_fg,
             "--prompt.foreground",
             "#c4b48b",
             "--height",
@@ -247,17 +251,17 @@ fn select_inner(
             "--cursor.foreground",
             "#e45cc0",
             "--item.foreground",
-            "#8899aa",
+            "#ffffff",
             "--selected.foreground",
             "#e45cc0",
             "--height",
             "18",
         ]);
-    }
-    if initial > 0
-        && let Some((_, init_item)) = clean_items.get(initial)
-    {
-        cmd.arg("--selected").arg(init_item.as_str());
+        if initial > 0
+            && let Some((_, init_item)) = clean_items.get(initial)
+        {
+            cmd.arg("--selected").arg(init_item.as_str());
+        }
     }
 
     let mut child = cmd
@@ -276,15 +280,33 @@ fn select_inner(
         return Ok(None);
     }
 
-    let picked = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let picked = strip_ansi(&String::from_utf8_lossy(&output.stdout)).trim().to_string();
     if picked.is_empty() {
         return Ok(None);
     }
 
     Ok(clean_items
         .into_iter()
-        .find(|(_, s)| s.as_str() == picked)
+        .find(|(_, s)| strip_ansi(s).trim() == picked)
         .map(|(idx, _)| idx))
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for nc in chars.by_ref() {
+                if nc.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
@@ -347,7 +369,7 @@ pub fn multi_select(
         "--cursor.foreground",
         "#e45cc0",
         "--item.foreground",
-        "#8899aa",
+        "#ffffff",
         "--selected.foreground",
         "#e45cc0",
         "--height",

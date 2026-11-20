@@ -39,8 +39,8 @@ fn format_episode_choices(
             let is_w = watched.contains(&i);
             let is_d = downloaded.contains(&i);
             match (is_w, is_d) {
-                (true, true) => format!("{} 󰸞 ⤓", e.title),
-                (true, false) => format!("{} 󰸞", e.title),
+                (true, true) => format!("\x1b[38;2;115;120;135m{} ⤓\x1b[0m", e.title),
+                (true, false) => format!("\x1b[38;2;115;120;135m{}\x1b[0m", e.title),
                 (false, true) => format!("{} ⤓", e.title),
                 (false, false) => e.title.clone(),
             }
@@ -765,7 +765,12 @@ fn download_menu(
                 let indices: Vec<usize> = titles
                     .iter()
                     .enumerate()
-                    .filter(|(_, t)| picked.contains(t))
+                    .filter(|(_, t)| {
+                        let plain = t
+                            .trim_start_matches("\x1b[38;2;115;120;135m")
+                            .trim_end_matches("\x1b[0m");
+                        picked.iter().any(|p| p == plain)
+                    })
                     .map(|(i, _)| i)
                     .collect();
                 if !indices.is_empty() {
