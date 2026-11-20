@@ -66,11 +66,61 @@ pub fn pick_preferred_stream_index(streams: &[StreamOption], preferred_quality: 
         .unwrap_or(0)
 }
 
+pub fn resolve_embed_with_ytdlp(url: &str) -> Result<String> {
+    let ytdlp = if has_command("yt-dlp") {
+        "yt-dlp"
+    } else {
+        "youtube-dl"
+    };
+
+    let output = Command::new("timeout")
+        .args([
+            "8",
+            ytdlp,
+            "--no-warnings",
+            "--no-playlist",
+            "--socket-timeout",
+            "5",
+            "--retries",
+            "1",
+            "--extractor-retries",
+            "1",
+            "-f",
+            "best",
+            "-g",
+            url,
+        ])
+        .output()
+        .context("yt-dlp çalıştırılamadı")?;
+
+    if !output.status.success() {
+        bail!("Embed bağlantısı çözülemedi (ölü veya zaman aşımı)");
+    }
+
+    let resolved = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if resolved.is_empty() {
+        bail!("yt-dlp boş URL döndürdü");
+    }
+    Ok(resolved)
+}
+
 pub fn play_mpv(
     stream: &StreamOption,
     subtitle_url: Option<&str>,
     title: &str,
 ) -> Result<()> {
+    let target_url = if !is_direct_stream_url(&stream.url) && has_ytdlp() {
+        resolve_embed_with_ytdlp(&stream.url)?
+    } else {
+        stream.url.clone()
+    };
+
     let mut cmd = Command::new("mpv");
     cmd.arg("--fullscreen")
         .arg("--save-position-on-quit")
@@ -80,7 +130,6 @@ pub fn play_mpv(
         .arg("--demuxer-readahead-secs=60")
         .arg("--demuxer-max-bytes=150MiB")
         .arg("--demuxer-lavf-o=allowed_extensions=ALL")
-        .arg("--ytdl-raw-options=socket-timeout=5")
         .arg(format!("--title={title}"))
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
@@ -97,7 +146,7 @@ pub fn play_mpv(
         cmd.arg(format!("--sub-file={sub}"));
     }
 
-    cmd.arg(&stream.url);
+    cmd.arg(&target_url);
 
     let status = cmd
         .status()
