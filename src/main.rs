@@ -2,19 +2,26 @@ mod config;
 mod models;
 mod player;
 mod sources;
+mod ui;
 
 use anyhow::Result;
 use clap::Parser;
-use inquire::{Select, Text};
-use std::fmt;
+use std::thread;
+use std::time::Duration;
 
-use crate::config::{AppConfig, HistoryEntry, load_config, load_history, save_config, save_history_entry};
+use crate::config::{
+    AppConfig, HistoryEntry, load_config, load_history, save_config, save_history_entry,
+};
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{pick_preferred_stream_index, play_mpv};
 use crate::sources::get_source;
 
 #[derive(Parser, Debug)]
-#[command(name = "anime", version, about = "Terminalde Türkçe altyazılı anime arama ve izleme aracı")]
+#[command(
+    name = "anime",
+    version,
+    about = "Terminalde Türkçe altyazılı anime arama ve izleme aracı"
+)]
 struct Cli {
     /// Doğrudan son izlenen animeyi devam ettir
     #[arg(long)]
@@ -25,22 +32,9 @@ struct Cli {
     source: Option<String>,
 }
 
-struct AnimeItem(Anime);
-impl fmt::Display for AnimeItem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.is_movie {
-            write!(f, "{} [Film]", self.0.title)
-        } else {
-            write!(f, "{}", self.0.title)
-        }
-    }
-}
-
-struct EpisodeItem(Episode);
-impl fmt::Display for EpisodeItem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.title)
-    }
+fn pause_error(msg: &str) {
+    eprintln!("\x1b[38;2;255;95;95m[!] {msg}\x1b[0m");
+    thread::sleep(Duration::from_millis(1600));
 }
 
 fn fetch_watch_cached(
@@ -68,42 +62,46 @@ fn watch_loop(
 
     loop {
         let ep = &episodes[ep_idx];
-        let active_q = manual_quality
-            .as_deref()
-            .unwrap_or(&cfg.preferred_quality);
-        let prompt = format!(
-            "{} — {} [{} | Kalite: {}]",
-            anime.title,
-            ep.title,
+        let active_q = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
+        let subtitle = format!(
+            "Kaynak: {}  •  Kalite: {}",
             anime.source.display_name(),
             active_q
         );
+        let title = format!("{} ( {} )", anime.title, ep.title);
 
-        let mut options = vec!["İzle"];
+        let mut options = vec!["İzle".to_string()];
         if !anime.is_movie {
-            options.extend(["Sonraki bölüm", "Önceki bölüm", "Bölüm seç"]);
+            options.extend([
+                "Sonraki bölüm".into(),
+                "Önceki bölüm".into(),
+                "Bölüm seç".into(),
+            ]);
         }
-        options.extend(["Çözünürlük / Kaynak seç", "Geri"]);
+        options.extend([
+            "────────────────────".into(),
+            "Çözünürlük seç".into(),
+            "Geri".into(),
+        ]);
 
-        let choice = match Select::new(&prompt, options).with_page_size(10).prompt() {
-            Ok(c) => c,
-            Err(_) => return Ok(()),
+        let Some(picked_idx) = ui::select(&title, &subtitle, &options, 0)? else {
+            return Ok(());
         };
 
-        match choice {
+        match options[picked_idx].as_str() {
             "İzle" => {
-                println!("Akış hazırlanıyor...");
-                match fetch_watch_cached(anime.source, anime, episodes, ep_idx) {
+                let res = ui::with_spinner("Akış hazırlanıyor...", || {
+                    fetch_watch_cached(anime.source, anime, episodes, ep_idx)
+                });
+                match res {
                     Ok(watch) => {
-                        let q_pref = manual_quality
-                            .as_deref()
-                            .unwrap_or(&cfg.preferred_quality);
+                        let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
                         let stream_idx = pick_preferred_stream_index(&watch.streams, q_pref);
                         let stream = &watch.streams[stream_idx];
-                        println!("Oynatılıyor: {} ({})", ep.title, stream.label);
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
-                        if let Err(e) = play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title) {
-                            eprintln!("[!] Oynatma hatası: {e}");
+                        if let Err(e) = play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title)
+                        {
+                            pause_error(&format!("Oynatma hatası: {e}"));
                         } else {
                             let _ = save_history_entry(HistoryEntry {
                                 source: anime.source.display_name().to_string(),
@@ -115,88 +113,104 @@ fn watch_loop(
                             });
                         }
                     }
-                    Err(e) => eprintln!("[!] Bölüm oynatılamadı: {e}"),
+                    Err(e) => pause_error(&format!("Bölüm oynatılamadı: {e}")),
                 }
             }
             "Sonraki bölüm" => {
                 if ep_idx + 1 < episodes.len() {
                     ep_idx += 1;
                 } else {
-                    println!("Zaten son bölümdesiniz.");
+                    pause_error("Zaten son bölümdesiniz.");
                 }
             }
             "Önceki bölüm" => {
                 if ep_idx > 0 {
                     ep_idx -= 1;
                 } else {
-                    println!("Zaten ilk bölümdesiniz.");
+                    pause_error("Zaten ilk bölümdesiniz.");
                 }
             }
             "Bölüm seç" => {
-                let items: Vec<EpisodeItem> = episodes.iter().cloned().map(EpisodeItem).collect();
-                if let Ok(selected) = Select::new("Bölüm seç:", items)
-                    .with_page_size(15)
-                    .with_starting_cursor(ep_idx)
-                    .prompt()
-                {
-                    if let Some(pos) = episodes.iter().position(|e| e.id == selected.0.id && e.number == selected.0.number) {
-                        ep_idx = pos;
-                    }
+                let ep_titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
+                if let Some(idx) = ui::select("Bölüm seç", &anime.title, &ep_titles, ep_idx)? {
+                    ep_idx = idx;
                 }
             }
-            "Çözünürlük / Kaynak seç" => {
-                println!("Çözünürlükler yükleniyor...");
-                match fetch_watch_cached(anime.source, anime, episodes, ep_idx) {
+            "Çözünürlük seç" => {
+                let res = ui::with_spinner("Çözünürlükler yükleniyor...", || {
+                    fetch_watch_cached(anime.source, anime, episodes, ep_idx)
+                });
+                match res {
                     Ok(watch) => {
                         let labels: Vec<String> =
                             watch.streams.iter().map(|s| s.label.clone()).collect();
-                        if let Ok(picked) = Select::new("Çözünürlük seç:", labels).prompt() {
-                            manual_quality = Some(picked);
+                        if let Some(q_idx) =
+                            ui::select("Çözünürlük seç", &ep.title, &labels, 0)?
+                        {
+                            manual_quality = Some(labels[q_idx].clone());
                         }
                     }
-                    Err(e) => eprintln!("[!] Çözünürlükler alınamadı: {e}"),
+                    Err(e) => pause_error(&format!("Çözünürlükler alınamadı: {e}")),
                 }
             }
-            "Geri" | _ => return Ok(()),
+            _ => return Ok(()),
         }
     }
 }
 
 fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> {
-    let query = match Text::new(&format!("{} — Anime ara:", source_kind.display_name())).prompt() {
-        Ok(q) if !q.trim().is_empty() => q,
-        _ => return Ok(()),
+    let Some(query) = ui::input(
+        &format!("Anime Ara ({})", source_kind.display_name()),
+        "Anime adını yazın...",
+    )?
+    else {
+        return Ok(());
     };
 
-    println!("Aranıyor...");
     let src = get_source(source_kind);
-    let results = match src.search(&query) {
+    let results = match ui::with_spinner("Aranıyor...", || src.search(&query)) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
-            println!("Sonuç bulunamadı.");
+            pause_error("Sonuç bulunamadı.");
             return Ok(());
         }
         Err(e) => {
-            eprintln!("[!] Arama hatası: {e}");
+            pause_error(&format!("Arama hatası: {e}"));
             return Ok(());
         }
     };
 
-    let items: Vec<AnimeItem> = results.into_iter().map(AnimeItem).collect();
-    let selected = match Select::new("Anime seç:", items).with_page_size(15).prompt() {
-        Ok(a) => a.0,
-        Err(_) => return Ok(()),
-    };
+    let titles: Vec<String> = results
+        .iter()
+        .map(|a| {
+            if a.is_movie {
+                format!("{} [Film]", a.title)
+            } else {
+                a.title.clone()
+            }
+        })
+        .collect();
 
-    println!("Bölümler yükleniyor...");
-    let episodes = match src.get_episodes(&selected) {
+    let Some(anime_idx) = ui::select(
+        "Anime seç",
+        &format!("{} sonuç ({})", results.len(), source_kind.display_name()),
+        &titles,
+        0,
+    )?
+    else {
+        return Ok(());
+    };
+    let selected = &results[anime_idx];
+
+    let episodes = match ui::with_spinner("Bölümler yükleniyor...", || src.get_episodes(selected))
+    {
         Ok(eps) if !eps.is_empty() => eps,
         Ok(_) => {
-            println!("Bölüm bulunamadı.");
+            pause_error("Bölüm bulunamadı.");
             return Ok(());
         }
         Err(e) => {
-            eprintln!("[!] Bölümler alınamadı: {e}");
+            pause_error(&format!("Bölümler alınamadı: {e}"));
             return Ok(());
         }
     };
@@ -204,23 +218,20 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
     let ep_idx = if selected.is_movie || episodes.len() == 1 {
         0
     } else {
-        let ep_items: Vec<EpisodeItem> = episodes.iter().cloned().map(EpisodeItem).collect();
-        match Select::new("Bölüm seç:", ep_items).with_page_size(15).prompt() {
-            Ok(ep) => episodes
-                .iter()
-                .position(|e| e.id == ep.0.id && e.number == ep.0.number)
-                .unwrap_or(0),
-            Err(_) => return Ok(()),
+        let ep_titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
+        match ui::select("Bölüm seç", &selected.title, &ep_titles, 0)? {
+            Some(i) => i,
+            None => return Ok(()),
         }
     };
 
-    watch_loop(cfg, &selected, &episodes, ep_idx)
+    watch_loop(cfg, selected, &episodes, ep_idx)
 }
 
 fn resume_last(cfg: &mut AppConfig) -> Result<()> {
     let history = load_history();
     let Some(last) = history.first() else {
-        println!("Henüz izleme geçmişi yok.");
+        pause_error("Henüz izleme geçmişi yok.");
         return Ok(());
     };
     let source_kind = SourceKind::from_str(&last.source).unwrap_or(SourceKind::AnimeciX);
@@ -230,11 +241,13 @@ fn resume_last(cfg: &mut AppConfig) -> Result<()> {
         source: source_kind,
         is_movie: last.is_movie,
     };
-    println!("Son izlenen yükleniyor: {} ({})", anime.title, last.episode_title);
     let src = get_source(source_kind);
-    let episodes = src.get_episodes(&anime)?;
+    let episodes = ui::with_spinner(
+        &format!("Yükleniyor: {}...", anime.title),
+        || src.get_episodes(&anime),
+    )?;
     if episodes.is_empty() {
-        println!("Bölüm bulunamadı.");
+        pause_error("Bölüm bulunamadı.");
         return Ok(());
     }
     let idx = last.episode_index.min(episodes.len().saturating_sub(1));
@@ -260,36 +273,57 @@ fn main() -> Result<()> {
         let history = load_history();
         let mut menu = vec!["Anime Ara".to_string()];
         if let Some(last) = history.first() {
-            menu.push(format!("Devam Et ({} — {})", last.anime_title, last.episode_title));
+            menu.push(format!("Son İzlenene Devam Et ({})", last.anime_title));
         }
-        menu.push(format!("Kaynak Değiştir (Aktif: {})", active_source.display_name()));
-        menu.push(format!("Varsayılan Kalite (Aktif: {})", cfg.preferred_quality));
-        menu.push("Çık".to_string());
+        menu.extend([
+            "────────────────────".into(),
+            "Kaynak Değiştir".into(),
+            "Varsayılan Kalite".into(),
+            "Çık".into(),
+        ]);
 
-        let choice = match Select::new("anime-cli", menu).prompt() {
-            Ok(c) => c,
-            Err(_) => break,
+        let subtitle = format!(
+            "Kaynak: {}  •  Varsayılan Kalite: {}",
+            active_source.display_name(),
+            cfg.preferred_quality
+        );
+
+        let Some(idx) = ui::select("anime-cli", &subtitle, &menu, 0)? else {
+            break;
         };
 
+        let choice = &menu[idx];
         if choice == "Anime Ara" {
             let _ = search_and_watch(&mut cfg, active_source);
-        } else if choice.starts_with("Devam Et") {
+        } else if choice.starts_with("Son İzlenene") {
             if let Err(e) = resume_last(&mut cfg) {
-                eprintln!("[!] Devam edilemedi: {e}");
+                pause_error(&format!("Devam edilemedi: {e}"));
             }
-        } else if choice.starts_with("Kaynak Değiştir") {
-            let sources: Vec<&str> = SourceKind::all().iter().map(|s| s.display_name()).collect();
-            if let Ok(picked) = Select::new("Kaynak seç:", sources).prompt()
-                && let Some(kind) = SourceKind::from_str(picked)
+        } else if choice == "Kaynak Değiştir" {
+            let sources: Vec<String> = SourceKind::all()
+                .iter()
+                .map(|s| s.display_name().to_string())
+                .collect();
+            if let Some(s_idx) =
+                ui::select("Kaynak seç", active_source.display_name(), &sources, 0)?
+                && let Some(kind) = SourceKind::from_str(&sources[s_idx])
             {
                 active_source = kind;
                 cfg.default_source = kind.display_name().to_string();
                 let _ = save_config(&cfg);
             }
-        } else if choice.starts_with("Varsayılan Kalite") {
-            let qualities = vec!["best", "1080p", "720p", "480p", "360p"];
-            if let Ok(picked) = Select::new("Varsayılan çözünürlük tercihi:", qualities).prompt() {
-                cfg.preferred_quality = picked.to_string();
+        } else if choice == "Varsayılan Kalite" {
+            let qualities: Vec<String> = ["best", "1080p", "720p", "480p", "360p"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+            if let Some(q_idx) = ui::select(
+                "Varsayılan çözünürlük tercihi",
+                &format!("Aktif: {}", cfg.preferred_quality),
+                &qualities,
+                0,
+            )? {
+                cfg.preferred_quality = qualities[q_idx].clone();
                 let _ = save_config(&cfg);
             }
         } else {
