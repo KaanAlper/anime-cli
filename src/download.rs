@@ -9,7 +9,7 @@ use std::thread;
 
 use crate::config::{log_error, mark_episode_downloaded};
 use crate::models::{Anime, Episode, StreamOption};
-use crate::player::{has_command, pick_preferred_stream_index};
+use crate::player::{build_playback_order, has_command};
 use crate::sources::get_source;
 
 pub fn sanitize_name(name: &str) -> String {
@@ -176,6 +176,68 @@ struct ActiveDownload {
     progress: Arc<Mutex<Option<String>>>,
     last_err: Arc<Mutex<Option<String>>>,
     job: DownloadJob,
+    remaining_streams: Vec<StreamOption>,
+}
+
+fn spawn_stream_download(
+    stream: &StreamOption,
+    job: DownloadJob,
+    remaining_streams: Vec<StreamOption>,
+    job_title: String,
+) -> Result<ActiveDownload> {
+    let mut cmd = build_ytdlp_cmd(stream, &job.out_path, job.use_aria2c)?;
+    let mut child = cmd.spawn()?;
+    let progress = Arc::new(Mutex::new(Some(format!("Başlatılıyor ({})...", stream.label))));
+    let last_err = Arc::new(Mutex::new(None));
+    if let Some(stdout) = child.stdout.take() {
+        let prog = Arc::clone(&progress);
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let t = line.trim();
+                if t.contains('|') {
+                    let parts: Vec<&str> = t.split('|').collect();
+                    if parts.len() >= 3
+                        && let Ok(mut p) = prog.lock()
+                    {
+                        *p = Some(format!(
+                            "{}  •  {}  •  ETA {}",
+                            parts[0].trim(),
+                            parts[1].trim(),
+                            parts[2].trim()
+                        ));
+                    }
+                }
+            }
+            if let Ok(mut p) = prog.lock() {
+                *p = None;
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let err_arc = Arc::clone(&last_err);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                let t = line.trim();
+                if !t.is_empty()
+                    && let Ok(mut e) = err_arc.lock()
+                {
+                    *e = Some(t.chars().take(90).collect());
+                }
+            }
+        });
+    }
+    let path = job.out_path.clone();
+    Ok(ActiveDownload {
+        child,
+        path,
+        title: job_title,
+        progress,
+        last_err,
+        job,
+        remaining_streams,
+    })
 }
 
 pub struct DownloadManager {
@@ -242,7 +304,24 @@ impl DownloadManager {
                         if self.completed_titles.len() > 10 {
                             self.completed_titles.remove(0);
                         }
+                    } else if !act.remaining_streams.is_empty() {
+                        let _ = fs::remove_file(&act.path);
+                        let next_stream = act.remaining_streams.remove(0);
+                        if let Ok(next_act) = spawn_stream_download(
+                            &next_stream,
+                            act.job,
+                            act.remaining_streams,
+                            act.title.clone(),
+                        ) {
+                            self.known_paths.insert(next_act.path.clone());
+                            still_running.push(next_act);
+                        } else {
+                            let msg = format!("{} (yedek oynatıcı başlatılamadı)", act.title);
+                            log_error(&format!("İndirme başarısız: {msg}"));
+                            self.failed_titles.push(msg);
+                        }
                     } else {
+                        let _ = fs::remove_file(&act.path);
                         let detail = act
                             .last_err
                             .lock()
@@ -294,68 +373,23 @@ impl DownloadManager {
                             log_error(&format!("İndirme başarısız: {msg}"));
                             self.failed_titles.push(msg);
                         } else {
-                            let idx = pick_preferred_stream_index(&allowed, &job.quality);
-                            let stream = &allowed[idx];
+                            let order = build_playback_order(&allowed, None, &job.quality, &[]);
+                            let mut ordered: Vec<StreamOption> =
+                                order.into_iter().map(|i| allowed[i].clone()).collect();
+                            let first_stream = ordered.remove(0);
                             if let Some(ref sub) = watch.subtitle_url
                                 && !sub.is_empty()
                             {
                                 save_subtitle(sub, &job.out_path);
                             }
-                            match build_ytdlp_cmd(stream, &job.out_path, job.use_aria2c)
-                                .and_then(|mut c| c.spawn().map_err(Into::into))
-                            {
-                                Ok(mut child) => {
-                                    let progress =
-                                        Arc::new(Mutex::new(Some("Başlatılıyor...".to_string())));
-                                    let last_err = Arc::new(Mutex::new(None));
-                                    if let Some(stdout) = child.stdout.take() {
-                                        let prog = Arc::clone(&progress);
-                                        thread::spawn(move || {
-                                            let reader = BufReader::new(stdout);
-                                            for line in reader.lines().map_while(Result::ok) {
-                                                let t = line.trim();
-                                                if t.contains('|') {
-                                                    let parts: Vec<&str> = t.split('|').collect();
-                                                    if parts.len() >= 3
-                                                        && let Ok(mut p) = prog.lock()
-                                                    {
-                                                        *p = Some(format!(
-                                                            "{}  •  {}  •  ETA {}",
-                                                            parts[0].trim(),
-                                                            parts[1].trim(),
-                                                            parts[2].trim()
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                            if let Ok(mut p) = prog.lock() {
-                                                *p = None;
-                                            }
-                                        });
-                                    }
-                                    if let Some(stderr) = child.stderr.take() {
-                                        let err_arc = Arc::clone(&last_err);
-                                        thread::spawn(move || {
-                                            let reader = BufReader::new(stderr);
-                                            for line in reader.lines().map_while(Result::ok) {
-                                                let t = line.trim();
-                                                if !t.is_empty()
-                                                    && let Ok(mut e) = err_arc.lock()
-                                                {
-                                                    *e = Some(t.chars().take(90).collect());
-                                                }
-                                            }
-                                        });
-                                    }
-                                    let path = job.out_path.clone();
-                                    self.active_children.push(ActiveDownload {
-                                        child,
-                                        path,
-                                        title: job_title,
-                                        progress,
-                                        last_err,
-                                        job,
-                                    });
+                            match spawn_stream_download(
+                                &first_stream,
+                                job.clone(),
+                                ordered,
+                                job_title.clone(),
+                            ) {
+                                Ok(act) => {
+                                    self.active_children.push(act);
                                     continue;
                                 }
                                 Err(e) => {
