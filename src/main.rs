@@ -235,8 +235,26 @@ fn watch_loop(
                         let primary = &allowed_streams[primary_idx];
 
                         if !is_direct_stream_url(&primary.url) && !has_ytdlp() {
+                            let (hint, prog, args): (&str, &str, &[&str]) = if cfg!(windows) {
+                                (
+                                    "winget install yt-dlp.yt-dlp",
+                                    "winget",
+                                    &["install", "--id", "yt-dlp.yt-dlp", "-e"],
+                                )
+                            } else if player::has_command("pacman") {
+                                ("sudo pacman -S yt-dlp", "sudo", &["pacman", "-S", "yt-dlp"])
+                            } else if player::has_command("apt-get") {
+                                (
+                                    "sudo apt-get install -y yt-dlp",
+                                    "sudo",
+                                    &["apt-get", "install", "-y", "yt-dlp"],
+                                )
+                            } else {
+                                ui::show_error("Bu kaynak embed oynatıcı kullanıyor; izlemek için 'yt-dlp' kurulu olmalı.");
+                                continue;
+                            };
                             let choices = vec![
-                                "Evet, 'sudo pacman -S yt-dlp' ile kur".to_string(),
+                                format!("Evet, '{hint}' ile kur"),
                                 "Hayır, vazgeç".to_string(),
                             ];
                             let picked = ui::select(
@@ -247,9 +265,7 @@ fn watch_loop(
                             )?;
                             if picked == Some(0) {
                                 ui::suspend();
-                                let status = std::process::Command::new("sudo")
-                                    .args(["pacman", "-S", "yt-dlp"])
-                                    .status();
+                                let status = std::process::Command::new(prog).args(args).status();
                                 let _ = ui::resume();
                                 if !matches!(status, Ok(s) if s.success()) {
                                     ui::show_error("yt-dlp kurulumu tamamlanamadı.");

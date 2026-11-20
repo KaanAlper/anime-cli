@@ -30,10 +30,16 @@ Terminal üzerinden Türkçe altyazılı anime arama, izleme ve indirme aracı (
 - `yt-dlp` & `ffmpeg` (indirme ve TürkAnime Arşiv embed bağlantıları için)
 - `rust` / `cargo` (kaynaktan derleme için)
 
-### Tek Satırda Kurulum (`curl`)
+### Tek Satırda Kurulum
 
+**Linux (Arch / Debian / Ubuntu — Wayland & X11 otomatik algılanır):**
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/KaanAlper/anime-cli/main/install.sh)"
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/KaanAlper/anime-cli/main/install.ps1 | iex
 ```
 
 ### `git clone` ile Kurulum

@@ -50,16 +50,29 @@ impl UiSession {
     pub fn start() -> Result<Self> {
         if !has_command("gum") {
             println!("\x1b[38;2;228;92;192m[!]\x1b[0m Arayüz için 'gum' kurulu değil.");
-            print!("'sudo pacman -S gum' ile kurulsun mu? [E/h]: ");
+            let (hint, prog, args): (&str, &str, &[&str]) = if cfg!(windows) {
+                (
+                    "winget install charmbracelet.gum",
+                    "winget",
+                    &["install", "--id", "charmbracelet.gum", "-e"],
+                )
+            } else if has_command("pacman") {
+                ("sudo pacman -S gum", "sudo", &["pacman", "-S", "gum"])
+            } else if has_command("apt-get") {
+                ("sudo apt-get install -y gum", "sudo", &["apt-get", "install", "-y", "gum"])
+            } else {
+                bail!("Arayüz için 'gum' kurulu olmalı.");
+            };
+            print!("'{hint}' ile kurulsun mu? [E/h]: ");
             let _ = io::stdout().flush();
             let mut ans = String::new();
             io::stdin().read_line(&mut ans)?;
             let ans = ans.trim().to_lowercase();
             if ans.is_empty() || ans == "e" || ans == "y" {
-                let status = Command::new("sudo")
-                    .args(["pacman", "-S", "gum"])
+                let status = Command::new(prog)
+                    .args(args)
                     .status()
-                    .context("sudo pacman çalıştırılamadı")?;
+                    .with_context(|| format!("{hint} çalıştırılamadı"))?;
                 if !status.success() {
                     bail!("gum kurulumu başarısız oldu.");
                 }
@@ -172,10 +185,12 @@ pub fn show_error(msg: &str) {
     let _ = io::stdin().read_line(&mut buf);
 }
 
+#[cfg(unix)]
 struct RawTtyGuard {
     saved_mode: Option<String>,
 }
 
+#[cfg(unix)]
 impl RawTtyGuard {
     fn enter() -> Result<Self> {
         let out = Command::new("stty")
@@ -194,6 +209,7 @@ impl RawTtyGuard {
     }
 }
 
+#[cfg(unix)]
 impl Drop for RawTtyGuard {
     fn drop(&mut self) {
         if let Some(ref mode) = self.saved_mode {
@@ -273,6 +289,7 @@ pub fn select_highlighted(
     select_native(title, subtitle, items, initial, true)
 }
 
+#[cfg(unix)]
 fn select_native(
     title: &str,
     subtitle: &str,
@@ -458,6 +475,91 @@ fn select_native(
             }
         }
     }
+}
+
+#[cfg(not(unix))]
+fn select_native(
+    title: &str,
+    subtitle: &str,
+    items: &[String],
+    initial: usize,
+    highlight: bool,
+) -> Result<Option<usize>> {
+    let _ = initial;
+    let clean_items: Vec<(usize, &String)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !strip_ansi(s).trim().is_empty())
+        .collect();
+    if clean_items.is_empty() {
+        return Ok(None);
+    }
+
+    print_header(title, subtitle);
+    let input_data = clean_items
+        .iter()
+        .map(|(_, s)| strip_ansi(s))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let (cursor_fg, cursor_bg) = if highlight {
+        ("#000000", "#f4d6ec")
+    } else {
+        ("#e45cc0", "")
+    };
+
+    let mut cmd = Command::new("gum");
+    cmd.args([
+        "filter",
+        "--placeholder",
+        "Filtrele...",
+        "--placeholder.foreground",
+        "#8899aa",
+        "--indicator",
+        "» ",
+        "--indicator.foreground",
+        "#e45cc0",
+        "--selected-prefix",
+        "",
+        "--unselected-prefix",
+        "",
+        "--cursor-text.foreground",
+        cursor_fg,
+        "--cursor-text.background",
+        cursor_bg,
+        "--text.foreground",
+        "#ffffff",
+        "--match.foreground",
+        "#8bb27f",
+        "--prompt.foreground",
+        "#c4b48b",
+        "--height",
+        "18",
+    ]);
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("gum filter çalıştırılamadı")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input_data.as_bytes());
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let picked = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    if picked.is_empty() {
+        return Ok(None);
+    }
+    Ok(clean_items
+        .into_iter()
+        .find(|(_, s)| strip_ansi(s).trim() == picked)
+        .map(|(idx, _)| idx))
 }
 
 pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {

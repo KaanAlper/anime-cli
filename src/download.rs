@@ -80,7 +80,7 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path, use_aria2c: bool) -> 
     } else if has_command("youtube-dl") {
         "youtube-dl"
     } else {
-        bail!("İndirme için 'yt-dlp' kurulu olmalı (sudo pacman -S yt-dlp).");
+        bail!("İndirme için 'yt-dlp' kurulu olmalı.");
     };
 
     let mut cmd = Command::new(ytdlp);
@@ -157,6 +157,7 @@ pub struct DownloadStatus {
     pub failed_titles: Vec<String>,
 }
 
+#[cfg(unix)]
 fn signal_pid(pid: u32, sig: &str) {
     let _ = Command::new("kill")
         .args([sig, &pid.to_string()])
@@ -164,6 +165,9 @@ fn signal_pid(pid: u32, sig: &str) {
         .stderr(Stdio::null())
         .status();
 }
+
+#[cfg(not(unix))]
+fn signal_pid(_pid: u32, _sig: &str) {}
 
 struct ActiveDownload {
     child: Child,

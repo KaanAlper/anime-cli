@@ -16,9 +16,14 @@ pub fn take_interrupted() -> bool {
 pub fn has_command(name: &str) -> bool {
     if let Some(paths) = env::var_os("PATH") {
         for dir in env::split_paths(&paths) {
-            let full = dir.join(name);
-            if full.is_file() {
+            if dir.join(name).is_file() {
                 return true;
+            }
+            #[cfg(windows)]
+            for ext in ["exe", "cmd", "bat"] {
+                if dir.join(format!("{name}.{ext}")).is_file() {
+                    return true;
+                }
             }
         }
     }
@@ -376,7 +381,7 @@ end)
         let is_direct = is_direct_stream_url(&stream.url);
         if !is_direct && !has_ytdlp() {
             bail!(
-                "mpv oynatamadı (kod: {:?}). Embed bağlantıları için 'yt-dlp' kurulu olmalı (sudo pacman -S yt-dlp).",
+                "mpv oynatamadı (kod: {:?}). Embed bağlantıları için 'yt-dlp' kurulu olmalı.",
                 status.code()
             );
         }
