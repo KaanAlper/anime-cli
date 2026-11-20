@@ -475,38 +475,72 @@ fn download_indices(
 }
 
 fn show_download_status(cfg: &AppConfig) {
-    print!("\x1b[2J\x1b[H");
-    println!("\x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m");
-    println!("\x1b[3;38;2;102;102;102m  Klasör: {}\x1b[0m\n", cfg.download_dir);
+    let _ = player::take_interrupted();
+    loop {
+        print!("\x1b[2J\x1b[H");
+        let _ = std::process::Command::new("gum")
+            .args([
+                "style",
+                "--border",
+                "rounded",
+                "--border-foreground",
+                "#e45cc0",
+                "--padding",
+                "0 2",
+                "--margin",
+                "0 0 1 0",
+                &format!(
+                    "\x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m\n\x1b[38;2;136;153;170mKlasör: {}\x1b[0m",
+                    cfg.download_dir
+                ),
+            ])
+            .status();
 
-    let st = bus::status();
-    if let Some(ref active) = st.active_title {
-        let icon = if st.download_paused {
-            "\x1b[38;2;196;180;139m⏸ Duraklatıldı\x1b[0m"
-        } else {
-            "\x1b[38;2;228;92;192m⬇ İndiriliyor\x1b[0m"
-        };
-        println!("  {icon}  {active}");
-    } else if st.queued_downloads == 0 && st.completed_titles.is_empty() {
-        println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m");
-    }
+        let st = bus::status();
+        if let Some(ref active) = st.active_title {
+            let icon = if st.download_paused {
+                "\x1b[38;2;196;180;139m⏸ Duraklatıldı\x1b[0m"
+            } else {
+                "\x1b[38;2;228;92;192m⬇ İndiriliyor\x1b[0m"
+            };
+            let prog = st
+                .active_progress
+                .as_deref()
+                .map(|p| format!("  \x1b[38;2;139;178;127m[{p}]\x1b[0m"))
+                .unwrap_or_default();
+            println!("  {icon}  {active}{prog}");
+        } else if st.queued_downloads == 0 && st.completed_titles.is_empty() {
+            println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m");
+        }
 
-    for q in &st.queued_titles {
-        println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}");
-    }
-    if st.queued_downloads > st.queued_titles.len() {
-        println!(
-            "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m",
-            st.queued_downloads - st.queued_titles.len()
-        );
-    }
-    for done in &st.completed_titles {
-        println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}");
-    }
+        for q in &st.queued_titles {
+            println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}");
+        }
+        if st.queued_downloads > st.queued_titles.len() {
+            println!(
+                "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m",
+                st.queued_downloads - st.queued_titles.len()
+            );
+        }
+        for done in &st.completed_titles {
+            println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}");
+        }
 
-    println!("\n\x1b[38;2;102;102;102mİzlerken otomatik duraklar, bitince devam eder. Enter'a basın...\x1b[0m");
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_line(&mut buf);
+        if !st.active_download && st.queued_downloads == 0 {
+            println!("\n\x1b[38;2;102;102;102mMenüye dönmek için Enter'a basın...\x1b[0m");
+            let mut buf = String::new();
+            let _ = std::io::stdin().read_line(&mut buf);
+            break;
+        }
+
+        println!("\n\x1b[38;2;102;102;102mCanlı güncelleniyor... Menüye dönmek için Ctrl+C basın (indirme arkada devam eder)\x1b[0m");
+        for _ in 0..5 {
+            if player::take_interrupted() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 }
 
 fn download_menu(

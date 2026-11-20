@@ -55,11 +55,24 @@ fn clear_screen() {
 
 fn print_header(title: &str, subtitle: &str) {
     clear_screen();
-    println!("\x1b[1;38;2;228;92;192m✦ {title}\x1b[0m");
+    let mut lines = vec![format!("\x1b[1;38;2;228;92;192m✦ {title}\x1b[0m")];
     if !subtitle.is_empty() {
-        println!("\x1b[3;38;2;102;102;102m  {subtitle}\x1b[0m");
+        lines.push(format!("\x1b[38;2;136;153;170m{subtitle}\x1b[0m"));
     }
-    println!();
+    let _ = Command::new("gum")
+        .args([
+            "style",
+            "--border",
+            "rounded",
+            "--border-foreground",
+            "#e45cc0",
+            "--padding",
+            "0 2",
+            "--margin",
+            "0 0 1 0",
+        ])
+        .arg(lines.join("\n"))
+        .status();
 }
 
 pub fn with_spinner<T, F>(label: &str, f: F) -> T

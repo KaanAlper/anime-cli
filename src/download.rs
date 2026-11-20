@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, bail};
 use std::collections::{HashSet, VecDeque};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use crate::models::{Anime, Episode, StreamOption};
 use crate::player::{has_command, pick_preferred_stream_index};
@@ -64,8 +67,11 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path) -> Result<Command> {
 
     cmd.arg("--no-part")
         .arg("--no-playlist")
-        .arg("--quiet")
+        .arg("--newline")
+        .arg("--progress")
         .arg("--no-warnings")
+        .arg("--progress-template")
+        .arg("download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
         .arg("--referer")
         .arg(referer)
         .arg("--user-agent")
@@ -78,7 +84,7 @@ fn build_ytdlp_cmd(stream: &StreamOption, out_path: &Path) -> Result<Command> {
         .arg(out_path)
         .arg(&stream.url)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
     Ok(cmd)
@@ -111,6 +117,7 @@ pub struct DownloadStatus {
     pub active: bool,
     pub paused: bool,
     pub active_title: Option<String>,
+    pub active_progress: Option<String>,
     pub queued_titles: Vec<String>,
     pub completed_titles: Vec<String>,
 }
@@ -127,6 +134,7 @@ pub struct DownloadManager {
     queue: VecDeque<DownloadJob>,
     known_paths: HashSet<PathBuf>,
     active_child: Option<(Child, PathBuf, String)>,
+    active_progress: Arc<Mutex<Option<String>>>,
     completed_titles: Vec<String>,
     playback_depth: usize,
 }
@@ -137,6 +145,7 @@ impl DownloadManager {
             queue: VecDeque::new(),
             known_paths: HashSet::new(),
             active_child: None,
+            active_progress: Arc::new(Mutex::new(None)),
             completed_titles: Vec::new(),
             playback_depth: 0,
         }
@@ -212,8 +221,36 @@ impl DownloadManager {
                             save_subtitle(sub, &job.out_path);
                         }
                         if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
-                            && let Ok(child) = cmd.spawn()
+                            && let Ok(mut child) = cmd.spawn()
                         {
+                            if let Ok(mut p) = self.active_progress.lock() {
+                                *p = Some("Başlatılıyor...".to_string());
+                            }
+                            if let Some(stdout) = child.stdout.take() {
+                                let prog = Arc::clone(&self.active_progress);
+                                thread::spawn(move || {
+                                    let reader = BufReader::new(stdout);
+                                    for line in reader.lines().map_while(Result::ok) {
+                                        let t = line.trim();
+                                        if t.contains('|') {
+                                            let parts: Vec<&str> = t.split('|').collect();
+                                            if parts.len() >= 3
+                                                && let Ok(mut p) = prog.lock()
+                                            {
+                                                *p = Some(format!(
+                                                    "{}  •  {}  •  ETA {}",
+                                                    parts[0].trim(),
+                                                    parts[1].trim(),
+                                                    parts[2].trim()
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    if let Ok(mut p) = prog.lock() {
+                                        *p = None;
+                                    }
+                                });
+                            }
                             let title = format!("{} — {}", job.anime.title, job.episode.title);
                             self.active_child = Some((child, job.out_path, title));
                             return;
@@ -231,6 +268,11 @@ impl DownloadManager {
             active: self.active_child.is_some(),
             paused: self.playback_depth > 0 && self.active_child.is_some(),
             active_title: self.active_child.as_ref().map(|(_, _, t)| t.clone()),
+            active_progress: self
+                .active_progress
+                .lock()
+                .ok()
+                .and_then(|g| g.clone()),
             queued_titles: self
                 .queue
                 .iter()
