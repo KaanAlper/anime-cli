@@ -57,11 +57,12 @@ pub fn pick_preferred_stream_index(streams: &[StreamOption], preferred_quality: 
         }
     }
 
-    // Default ("best"): pick the stream with the highest numeric resolution (e.g., 1080 > 720 > 480)
+    // Default ("best"): pick the stream with the highest numeric resolution (e.g., 1080 > 720 > 480).
+    // On ties (e.g. player-name labels with score 0), keep the earliest item in priority order.
     streams
         .iter()
         .enumerate()
-        .max_by_key(|(_, s)| extract_resolution_score(&s.label))
+        .max_by_key(|(i, s)| (extract_resolution_score(&s.label), std::cmp::Reverse(*i)))
         .map(|(i, _)| i)
         .unwrap_or(0)
 }
@@ -200,5 +201,12 @@ mod tests {
         ];
         assert_eq!(pick_preferred_stream_index(&streams, "best"), 1);
         assert_eq!(pick_preferred_stream_index(&streams, "720p"), 2);
+
+        let player_labels = vec![
+            StreamOption { label: "GDRIVE".into(), url: "u1".into(), referer: None },
+            StreamOption { label: "MAIL".into(), url: "u2".into(), referer: None },
+            StreamOption { label: "UQLOAD".into(), url: "u3".into(), referer: None },
+        ];
+        assert_eq!(pick_preferred_stream_index(&player_labels, "best"), 0);
     }
 }
