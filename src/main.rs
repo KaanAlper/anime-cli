@@ -674,7 +674,10 @@ fn main() -> Result<()> {
         let history = load_history();
         let mut menu = vec!["Anime Ara".to_string()];
         if let Some(last) = history.first() {
-            menu.push(format!("Son İzlenene Devam Et ({})", last.anime_title));
+            menu.push(format!(
+                "Son İzlenene Devam Et ({} — {})",
+                last.anime_title, last.source
+            ));
         }
         menu.extend([
             "Kaynak Değiştir".into(),

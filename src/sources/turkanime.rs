@@ -246,7 +246,9 @@ impl AnimeSource for TurkAnime {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| {
-                    if url.contains(".mp4") || url.contains(".m3u8") {
+                    if url.contains("sibnet.ru") {
+                        Some("https://video.sibnet.ru/".to_string())
+                    } else if url.contains(".mp4") || url.contains(".m3u8") {
                         Some("https://www.turkanime.co/".to_string())
                     } else {
                         None

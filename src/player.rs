@@ -133,30 +133,36 @@ pub fn build_playback_order(
     order
 }
 
-pub fn resolve_embed_with_ytdlp(url: &str) -> Result<String> {
+pub fn resolve_embed_with_ytdlp(url: &str, referer: Option<&str>) -> Result<String> {
     let ytdlp = if has_command("yt-dlp") {
         "yt-dlp"
     } else {
         "youtube-dl"
     };
 
+    let mut args = vec![
+        "8",
+        ytdlp,
+        "--no-warnings",
+        "--no-playlist",
+        "--socket-timeout",
+        "5",
+        "--retries",
+        "1",
+        "--extractor-retries",
+        "1",
+        "-f",
+        "best",
+        "-g",
+    ];
+    if let Some(r) = referer {
+        args.push("--referer");
+        args.push(r);
+    }
+    args.push(url);
+
     let output = Command::new("timeout")
-        .args([
-            "8",
-            ytdlp,
-            "--no-warnings",
-            "--no-playlist",
-            "--socket-timeout",
-            "5",
-            "--retries",
-            "1",
-            "--extractor-retries",
-            "1",
-            "-f",
-            "best",
-            "-g",
-            url,
-        ])
+        .args(&args)
         .output()
         .context("yt-dlp çalıştırılamadı")?;
 
@@ -184,7 +190,7 @@ pub fn play_mpv(
 ) -> Result<()> {
     let resolved_embed = !is_direct_stream_url(&stream.url) && has_ytdlp();
     let target_url = if resolved_embed {
-        let u = resolve_embed_with_ytdlp(&stream.url)?;
+        let u = resolve_embed_with_ytdlp(&stream.url, stream.referer.as_deref())?;
         println!("  \x1b[38;2;139;178;127m✔\x1b[0m Bağlantı çözüldü, mpv açılıyor...");
         u
     } else {
@@ -221,11 +227,11 @@ pub fn play_mpv(
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
 
-    let referer = stream
-        .referer
-        .as_deref()
-        .unwrap_or("https://yeshi.eu.org/");
-    cmd.arg(format!("--referrer={referer}"));
+    if let Some(referer) = stream.referer.as_deref()
+        && !referer.is_empty()
+    {
+        cmd.arg(format!("--referrer={referer}"));
+    }
 
     if let Some(sub) = subtitle_url
         && !sub.is_empty()
