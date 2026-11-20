@@ -1,14 +1,35 @@
 use anyhow::{Context, Result, bail};
+use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::Duration;
 
+use crate::config::cache_dir;
 use crate::player::has_command;
+
+const LOGO_TERM_BYTES: &[u8] = include_bytes!("../assets/logo_term.png");
+static LOGO_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+fn term_logo_path() -> Option<&'static PathBuf> {
+    LOGO_PATH
+        .get_or_init(|| {
+            let dir = cache_dir();
+            let _ = fs::create_dir_all(&dir);
+            let p = dir.join("logo_term.png");
+            if fs::write(&p, LOGO_TERM_BYTES).is_ok() {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .as_ref()
+}
 
 pub struct UiSession;
 
@@ -55,6 +76,15 @@ fn clear_screen() {
 
 fn print_header(title: &str, subtitle: &str) {
     clear_screen();
+    if std::env::var_os("KITTY_WINDOW_ID").is_some()
+        && has_command("kitten")
+        && let Some(logo) = term_logo_path()
+    {
+        let _ = Command::new("kitten")
+            .args(["icat", "--align", "left", "--stdin", "no"])
+            .arg(logo)
+            .status();
+    }
     let mut lines = vec![format!("\x1b[1;38;2;228;92;192m✦ {title}\x1b[0m")];
     if !subtitle.is_empty() {
         lines.push(format!("\x1b[38;2;136;153;170m{subtitle}\x1b[0m"));

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="260" alt="anime-cli" />
+</p>
+
 # ✦ anime-cli
 
 Terminal üzerinden Türkçe altyazılı anime arama, izleme ve indirme aracı (**Rust** + **Charm `gum`** + **`mpv`**).
