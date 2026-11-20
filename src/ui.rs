@@ -208,6 +208,28 @@ impl Drop for RawTtyGuard {
     }
 }
 
+fn fuzzy_match_positions(text: &str, query: &str) -> Option<Vec<usize>> {
+    let q_chars: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
+    if q_chars.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut qi = 0usize;
+    let mut positions = Vec::with_capacity(q_chars.len());
+    for (ti, ch) in text.chars().enumerate() {
+        for lc in ch.to_lowercase() {
+            if qi < q_chars.len() && lc == q_chars[qi] {
+                positions.push(ti);
+                qi += 1;
+            }
+        }
+    }
+    if qi == q_chars.len() {
+        Some(positions)
+    } else {
+        None
+    }
+}
+
 fn highlight_non_selected_match(text: &str, query: &str) -> String {
     if query.is_empty() {
         return format!("\x1b[38;2;255;255;255m{text}\x1b[0m");
@@ -224,6 +246,20 @@ fn highlight_non_selected_match(text: &str, query: &str) -> String {
                 "\x1b[38;2;255;255;255m{before}\x1b[38;2;139;178;127m{matched}\x1b[38;2;255;255;255m{after}\x1b[0m"
             );
         }
+    }
+    if let Some(pos) = fuzzy_match_positions(text, query) {
+        let mut out = String::with_capacity(text.len() * 2);
+        let mut pi = 0usize;
+        for (ti, ch) in text.chars().enumerate() {
+            if pi < pos.len() && pos[pi] == ti {
+                let _ = write!(out, "\x1b[38;2;139;178;127m{ch}");
+                pi += 1;
+            } else {
+                let _ = write!(out, "\x1b[38;2;255;255;255m{ch}");
+            }
+        }
+        out.push_str("\x1b[0m");
+        return out;
     }
     format!("\x1b[38;2;255;255;255m{text}\x1b[0m")
 }
@@ -277,6 +313,8 @@ pub fn select_highlighted(
                         Some((i, s, 1))
                     } else if words.iter().all(|w| sl.contains(w)) {
                         Some((i, s, 2))
+                    } else if fuzzy_match_positions(&sl, &q_lower).is_some() {
+                        Some((i, s, 3))
                     } else {
                         None
                     }
@@ -322,7 +360,7 @@ pub fn select_highlighted(
                 if idx == cursor {
                     let _ = write!(
                         buf,
-                        "\x1b[38;2;228;92;192m» \x1b[48;2;244;214;236;38;2;0;0;0;1m {item} \x1b[0m\x1b[K\r\n"
+                        "\x1b[38;2;228;92;192m» \x1b[1m\x1b[48;2;244;214;236m\x1b[38;2;0;0;0m {item} \x1b[0m\x1b[K\r\n"
                     );
                 } else {
                     let rendered = highlight_non_selected_match(item, &query);
