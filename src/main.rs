@@ -110,7 +110,14 @@ fn watch_loop(
         );
         let title = format!("{} ( {} )", anime.title, ep.title);
 
-        let mut options = vec!["İzle".to_string()];
+        let local_file =
+            download::existing_local_episode(&cfg.download_dir, &anime.title, &ep.title);
+        let watch_label = if local_file.is_some() {
+            "İzle (Yerel)".to_string()
+        } else {
+            "İzle".to_string()
+        };
+        let mut options = vec![watch_label];
         if !anime.is_movie {
             options.extend([
                 "Sonraki bölüm".into(),
@@ -134,7 +141,60 @@ fn watch_loop(
         };
 
         match options[picked_idx].as_str() {
-            "İzle" => {
+            op if op.starts_with("İzle") => {
+                if let Some(ref local_path) = local_file {
+                    let mpv_title = format!("{} - {}", anime.title, ep.title);
+                    let sub_path = ["srt", "vtt"]
+                        .iter()
+                        .map(|ext| local_path.with_extension(ext))
+                        .find(|p| p.is_file())
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let local_stream = models::StreamOption {
+                        label: "Yerel Dosya".to_string(),
+                        url: local_path.to_string_lossy().into_owned(),
+                        referer: None,
+                        fansub: None,
+                    };
+                    println!(
+                        "\x1b[38;2;228;92;192m▶\x1b[0m Yerel dosyadan oynatılıyor: {}",
+                        local_path.display()
+                    );
+                    bus::emit(bus::AppEvent::PlaybackStarted);
+                    let played = match play_mpv(
+                        &local_stream,
+                        sub_path.as_deref(),
+                        &mpv_title,
+                        cfg.remember_position,
+                    ) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            if player::take_interrupted() {
+                                true
+                            } else {
+                                ui::show_error(&format!("Yerel dosya oynatma hatası: {e}"));
+                                false
+                            }
+                        }
+                    };
+                    let history_entry = if played {
+                        Some(HistoryEntry {
+                            source: anime.source.display_name().to_string(),
+                            anime_id: anime.id.clone(),
+                            anime_title: anime.title.clone(),
+                            is_movie: anime.is_movie,
+                            episode_index: ep_idx,
+                            episode_title: ep.title.clone(),
+                            watched_episodes: vec![ep_idx],
+                            downloaded_episodes: Vec::new(),
+                        })
+                    } else {
+                        None
+                    };
+                    bus::emit(bus::AppEvent::PlaybackEnded {
+                        history: history_entry,
+                    });
+                    continue;
+                }
                 let res = ui::with_spinner("Akış hazırlanıyor...", || {
                     fetch_watch_cached(anime.source, anime, episodes, ep_idx)
                 });

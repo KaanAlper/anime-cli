@@ -51,6 +51,21 @@ pub fn target_file_path(download_dir: &str, anime_title: &str, ep_title: &str) -
     dir.join(format!("{}.mp4", sanitize_name(ep_title)))
 }
 
+pub fn existing_local_episode(
+    download_dir: &str,
+    anime_title: &str,
+    ep_title: &str,
+) -> Option<PathBuf> {
+    let p = Path::new(download_dir)
+        .join(sanitize_name(anime_title))
+        .join(format!("{}.mp4", sanitize_name(ep_title)));
+    if p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        Some(p)
+    } else {
+        None
+    }
+}
+
 fn is_hls_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.contains(".m3u8")
