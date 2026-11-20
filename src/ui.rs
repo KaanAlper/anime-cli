@@ -233,3 +233,58 @@ pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
         Ok(Some(text))
     }
 }
+
+pub fn multi_select(
+    title: &str,
+    subtitle: &str,
+    items: &[String],
+    preselected: &[String],
+) -> Result<Option<Vec<String>>> {
+    if items.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+
+    print_header(title, subtitle);
+
+    let input_data = items.join("\n");
+    let mut cmd = Command::new("gum");
+    cmd.args([
+        "choose",
+        "--no-limit",
+        "--cursor",
+        "» ",
+        "--cursor.foreground",
+        "#e45cc0",
+        "--selected.foreground",
+        "#e45cc0",
+        "--height",
+        "18",
+    ]);
+
+    if !preselected.is_empty() {
+        cmd.arg("--selected").arg(preselected.join(","));
+    }
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("gum choose çalıştırılamadı")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input_data.as_bytes());
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let selected: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(Some(selected))
+}

@@ -101,6 +101,7 @@ pub struct DownloadJob {
     pub episode: Episode,
     pub ep_in_season: usize,
     pub quality: String,
+    pub banned_players: Vec<String>,
     pub out_path: PathBuf,
 }
 
@@ -178,21 +179,30 @@ impl DownloadManager {
         {
             if !job.out_path.exists() {
                 let src = get_source(job.anime.source);
-                if let Ok(watch) = src.get_watch_data(&job.anime, &job.episode, job.ep_in_season)
-                    && !watch.streams.is_empty()
-                {
-                    let idx = pick_preferred_stream_index(&watch.streams, &job.quality);
-                    let stream = &watch.streams[idx];
-                    if let Some(ref sub) = watch.subtitle_url
-                        && !sub.is_empty()
-                    {
-                        save_subtitle(sub, &job.out_path);
-                    }
-                    if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
-                        && let Ok(child) = cmd.spawn()
-                    {
-                        self.active_child = Some((child, job.out_path));
-                        return;
+                if let Ok(watch) = src.get_watch_data(&job.anime, &job.episode, job.ep_in_season) {
+                    let allowed: Vec<_> = watch
+                        .streams
+                        .into_iter()
+                        .filter(|s| {
+                            !job.banned_players
+                                .iter()
+                                .any(|b| s.label.to_ascii_lowercase().contains(&b.to_ascii_lowercase()))
+                        })
+                        .collect();
+                    if !allowed.is_empty() {
+                        let idx = pick_preferred_stream_index(&allowed, &job.quality);
+                        let stream = &allowed[idx];
+                        if let Some(ref sub) = watch.subtitle_url
+                            && !sub.is_empty()
+                        {
+                            save_subtitle(sub, &job.out_path);
+                        }
+                        if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
+                            && let Ok(child) = cmd.spawn()
+                        {
+                            self.active_child = Some((child, job.out_path));
+                            return;
+                        }
                     }
                 }
             }

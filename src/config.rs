@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub download_dir: String,
     #[serde(default)]
     pub download_while_watching: bool,
+    #[serde(default)]
+    pub banned_players: Vec<String>,
 }
 
 fn default_source() -> String {
@@ -38,6 +40,7 @@ impl Default for AppConfig {
             preferred_quality: default_quality(),
             download_dir: default_download_dir(),
             download_while_watching: false,
+            banned_players: Vec::new(),
         }
     }
 }

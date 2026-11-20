@@ -35,6 +35,13 @@ struct Cli {
     source: Option<String>,
 }
 
+fn is_player_banned(label: &str, banned: &[String]) -> bool {
+    let lower = label.to_ascii_lowercase();
+    banned
+        .iter()
+        .any(|b| !b.is_empty() && lower.contains(&b.to_ascii_lowercase()))
+}
+
 fn fetch_watch_cached(
     source_kind: SourceKind,
     anime: &Anime,
@@ -104,18 +111,24 @@ fn watch_loop(
                 });
                 match res {
                     Ok(watch) => {
-                        if watch.streams.is_empty() {
-                            ui::show_error("Bu bölüm için oynatılabilir akış bulunamadı.");
+                        let allowed_streams: Vec<_> = watch
+                            .streams
+                            .iter()
+                            .filter(|s| !is_player_banned(&s.label, &cfg.banned_players))
+                            .cloned()
+                            .collect();
+                        if allowed_streams.is_empty() {
+                            ui::show_error("Banlı oynatıcılar hariç oynatılabilir akış bulunamadı.");
                             continue;
                         }
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
                         let candidate_indices = build_playback_order(
-                            &watch.streams,
+                            &allowed_streams,
                             selected_fansub.as_deref(),
                             q_pref,
                         );
                         let primary_idx = candidate_indices[0];
-                        let primary = &watch.streams[primary_idx];
+                        let primary = &allowed_streams[primary_idx];
 
                         if !is_direct_stream_url(&primary.url) && !has_ytdlp() {
                             let choices = vec![
@@ -153,6 +166,7 @@ fn watch_loop(
                                 episode: ep.clone(),
                                 ep_in_season,
                                 quality: q_pref.to_string(),
+                                banned_players: cfg.banned_players.clone(),
                                 out_path: download::target_file_path(
                                     &cfg.download_dir,
                                     &anime.title,
@@ -171,7 +185,7 @@ fn watch_loop(
                             if player::take_interrupted() {
                                 break;
                             }
-                            let stream = &watch.streams[idx];
+                            let stream = &allowed_streams[idx];
                             let fs_tag = stream
                                 .fansub
                                 .as_deref()
@@ -454,6 +468,7 @@ fn download_range(
             episode: ep.clone(),
             ep_in_season,
             quality: q_pref.to_string(),
+            banned_players: cfg.banned_players.clone(),
             out_path: download::target_file_path(&cfg.download_dir, &anime.title, &ep.title),
         }));
     }
@@ -537,6 +552,7 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
             format!("Varsayılan Kalite ({})", cfg.preferred_quality),
             format!("İndirme Dizini ({})", cfg.download_dir),
             format!("İzlerken İndir ({dl_watch_box})"),
+            format!("Banlı Oynatıcılar ({} seçili)", cfg.banned_players.len()),
             "Önbelleği Temizle".into(),
             "Geri".into(),
         ];
@@ -586,6 +602,46 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
                 let _ = save_config(cfg);
             }
             4 => {
+                let mut known: Vec<String> = [
+                    "GDRIVE",
+                    "MAIL",
+                    "ODNOKLASSNIKI",
+                    "OK.RU",
+                    "SIBNET",
+                    "VK",
+                    "YADISK",
+                    "PIXELDRAIN",
+                    "HDVID",
+                    "VIDMOLY",
+                    "SENDVID",
+                    "MYVI",
+                    "MP4UPLOAD",
+                    "UQLOAD",
+                    "DOODSTREAM",
+                    "STREAMSB",
+                    "DAILYMOTION",
+                    "Beta Player",
+                    "Aincrad",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect();
+                for existing in &cfg.banned_players {
+                    if !known.contains(existing) {
+                        known.push(existing.clone());
+                    }
+                }
+                if let Some(picked) = ui::multi_select(
+                    "Banlı Oynatıcılar",
+                    "Space ile seç/kaldır, Enter ile kaydet (denemelerde otomatik atlanır)",
+                    &known,
+                    &cfg.banned_players,
+                )? {
+                    cfg.banned_players = picked;
+                    let _ = save_config(cfg);
+                }
+            }
+            5 => {
                 let _ = fs::remove_dir_all(cache_dir());
                 bus::emit(bus::AppEvent::CacheCleared);
                 ui::show_error("Önbellek temizlendi.");
