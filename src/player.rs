@@ -234,7 +234,8 @@ pub fn play_mpv(
         .arg("--demuxer-seekable-cache=yes")
         .arg("--force-seekable=yes")
         .arg("--demuxer-readahead-secs=15")
-        .arg("--demuxer-max-bytes=100MiB")
+        .arg("--demuxer-max-bytes=400MiB")
+        .arg("--demuxer-max-back-bytes=100MiB")
         .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5");
 
     if is_hls {
