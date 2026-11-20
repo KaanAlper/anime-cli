@@ -115,10 +115,21 @@ pub fn play_mpv(
     subtitle_url: Option<&str>,
     title: &str,
 ) -> Result<()> {
-    let target_url = if !is_direct_stream_url(&stream.url) && has_ytdlp() {
-        resolve_embed_with_ytdlp(&stream.url)?
+    let resolved_embed = !is_direct_stream_url(&stream.url) && has_ytdlp();
+    let target_url = if resolved_embed {
+        let u = resolve_embed_with_ytdlp(&stream.url)?;
+        println!("  \x1b[38;2;139;178;127m✔\x1b[0m Bağlantı çözüldü, mpv açılıyor...");
+        u
     } else {
         stream.url.clone()
+    };
+
+    let is_hls = {
+        let lower = target_url.to_ascii_lowercase();
+        lower.contains(".m3u8")
+            || lower.contains("/mn/")
+            || lower.contains("master.txt")
+            || lower.contains("puffytr")
     };
 
     let mut cmd = Command::new("mpv");
@@ -128,9 +139,16 @@ pub fn play_mpv(
         .arg("--no-terminal")
         .arg("--cache=yes")
         .arg("--demuxer-readahead-secs=60")
-        .arg("--demuxer-max-bytes=150MiB")
-        .arg("--demuxer-lavf-o=allowed_extensions=ALL")
-        .arg(format!("--title={title}"))
+        .arg("--demuxer-max-bytes=150MiB");
+
+    if is_hls {
+        cmd.arg("--demuxer-lavf-o=allowed_extensions=ALL");
+    }
+    if resolved_embed {
+        cmd.arg("--ytdl=no");
+    }
+
+    cmd.arg(format!("--title={title}"))
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
 
