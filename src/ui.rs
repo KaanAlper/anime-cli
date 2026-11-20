@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::config::cache_dir;
 use crate::player::has_command;
 
-const LOGO_TERM_BYTES: &[u8] = include_bytes!("../assets/logo_term.png");
+const LOGO_SVG_BYTES: &[u8] = include_bytes!("../assets/logo.svg");
 static LOGO_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn term_logo_path() -> Option<&'static PathBuf> {
@@ -21,12 +21,23 @@ fn term_logo_path() -> Option<&'static PathBuf> {
         .get_or_init(|| {
             let dir = cache_dir();
             let _ = fs::create_dir_all(&dir);
-            let p = dir.join("logo_term.png");
-            if fs::write(&p, LOGO_TERM_BYTES).is_ok() {
-                Some(p)
-            } else {
-                None
+            let svg_path = dir.join("logo.svg");
+            if fs::write(&svg_path, LOGO_SVG_BYTES).is_err() {
+                return None;
             }
+            if has_command("rsvg-convert") {
+                let png_path = dir.join("logo_term.png");
+                if Command::new("rsvg-convert")
+                    .args(["-w", "340", "-o"])
+                    .arg(&png_path)
+                    .arg(&svg_path)
+                    .status()
+                    .is_ok_and(|s| s.success())
+                {
+                    return Some(png_path);
+                }
+            }
+            Some(svg_path)
         })
         .as_ref()
 }
