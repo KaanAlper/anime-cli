@@ -132,6 +132,9 @@ fn watch_loop(
                         let mut last_err = None;
                         let mut played = false;
                         for (n, idx) in candidate_indices.into_iter().enumerate() {
+                            if player::take_interrupted() {
+                                break;
+                            }
                             let stream = &watch.streams[idx];
                             println!(
                                 "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}",
@@ -145,6 +148,10 @@ fn watch_loop(
                                     break;
                                 }
                                 Err(e) => {
+                                    if player::take_interrupted() {
+                                        played = true;
+                                        break;
+                                    }
                                     last_err = Some(e);
                                 }
                             }
@@ -359,6 +366,9 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
 }
 
 fn main() -> Result<()> {
+    let _ = ctrlc::set_handler(|| {
+        player::INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     let _ui = ui::UiSession::start()?;
     let cli = Cli::parse();
     let mut cfg = load_config();

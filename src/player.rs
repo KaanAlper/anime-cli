@@ -2,8 +2,15 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use std::env;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::models::StreamOption;
+
+pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+pub fn take_interrupted() -> bool {
+    INTERRUPTED.swap(false, Ordering::SeqCst)
+}
 
 pub fn has_command(name: &str) -> bool {
     if let Some(paths) = env::var_os("PATH") {
@@ -170,6 +177,10 @@ pub fn play_mpv(
     let status = cmd
         .status()
         .context("mpv başlatılamadı (sisteminizde mpv yüklü mü?)")?;
+
+    if take_interrupted() || status.code().is_none() {
+        return Ok(());
+    }
 
     if !status.success() && status.code() != Some(4) {
         let is_direct = is_direct_stream_url(&stream.url);
