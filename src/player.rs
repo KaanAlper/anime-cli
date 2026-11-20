@@ -202,11 +202,11 @@ mod tests {
         assert_eq!(pick_preferred_stream_index(&streams, "best"), 1);
         assert_eq!(pick_preferred_stream_index(&streams, "720p"), 2);
 
-        let player_labels = vec![
-            StreamOption { label: "GDRIVE".into(), url: "u1".into(), referer: None },
-            StreamOption { label: "MAIL".into(), url: "u2".into(), referer: None },
-            StreamOption { label: "UQLOAD".into(), url: "u3".into(), referer: None },
+        let ordered_labels = vec![
+            StreamOption { label: "Stream A".into(), url: "u1".into(), referer: None },
+            StreamOption { label: "Stream B".into(), url: "u2".into(), referer: None },
+            StreamOption { label: "Stream C".into(), url: "u3".into(), referer: None },
         ];
-        assert_eq!(pick_preferred_stream_index(&player_labels, "best"), 0);
+        assert_eq!(pick_preferred_stream_index(&ordered_labels, "best"), 0);
     }
 }
