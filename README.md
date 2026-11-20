@@ -42,6 +42,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/KaanAlper/anime-cli/main
 irm https://raw.githubusercontent.com/KaanAlper/anime-cli/main/install.ps1 | iex
 ```
 
+**Hazır İkili / `.exe` İndirme:**
+Kurulum betiği kullanmak istemeyenler [GitHub Releases](https://github.com/KaanAlper/anime-cli/releases/latest) sayfasından doğrudan `anime-windows-x86_64.exe` veya `anime-linux-x86_64` dosyasını indirebilir. İlk açılışta eksik bağımlılıklar (`gum`, `mpv`, `yt-dlp`, `ffmpeg`) otomatik kontrol edilip kurulum teklif edilir.
+
 ### `git clone` ile Kurulum
 
 ```bash

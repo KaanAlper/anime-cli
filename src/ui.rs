@@ -48,36 +48,103 @@ pub struct UiSession;
 
 impl UiSession {
     pub fn start() -> Result<Self> {
+        let mut missing: Vec<(&str, &str, &str, &str)> = Vec::new();
         if !has_command("gum") {
-            println!("\x1b[38;2;228;92;192m[!]\x1b[0m Arayüz için 'gum' kurulu değil.");
-            let (hint, prog, args): (&str, &str, &[&str]) = if cfg!(windows) {
-                (
-                    "winget install charmbracelet.gum",
-                    "winget",
-                    &["install", "--id", "charmbracelet.gum", "-e"],
-                )
+            missing.push(("gum", "gum", "gum", "charmbracelet.gum"));
+        }
+        if !has_command("mpv") {
+            missing.push(("mpv", "mpv", "mpv", "shinchiro.mpv"));
+        }
+        if !has_command("yt-dlp") && !has_command("youtube-dl") {
+            missing.push(("yt-dlp", "yt-dlp", "yt-dlp", "yt-dlp.yt-dlp"));
+        }
+        if !has_command("ffmpeg") {
+            missing.push(("ffmpeg", "ffmpeg", "ffmpeg", "Gyan.FFmpeg"));
+        }
+
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing.iter().map(|m| m.0).collect();
+            println!(
+                "\x1b[38;2;228;92;192m[!]\x1b[0m Eksik bağımlılıklar: {}",
+                names.join(", ")
+            );
+            if cfg!(windows) {
+                if !has_command("winget") {
+                    bail!(
+                        "Eksik bağımlılıklar ({}) için winget bulunamadı; lütfen manuel kurun.",
+                        names.join(", ")
+                    );
+                }
+                print!("winget ile otomatik kurulsun mu? [E/h]: ");
+                let _ = io::stdout().flush();
+                let mut ans = String::new();
+                io::stdin().read_line(&mut ans)?;
+                let ans = ans.trim().to_lowercase();
+                if ans.is_empty() || ans == "e" || ans == "y" {
+                    for (_, _, _, winget_id) in &missing {
+                        let status = Command::new("winget")
+                            .args([
+                                "install",
+                                "--id",
+                                winget_id,
+                                "-e",
+                                "--accept-source-agreements",
+                                "--accept-package-agreements",
+                            ])
+                            .status()
+                            .with_context(|| format!("winget {winget_id} çalıştırılamadı"))?;
+                        if !status.success() {
+                            bail!("{winget_id} kurulumu başarısız oldu.");
+                        }
+                    }
+                } else if !has_command("gum") || !has_command("mpv") {
+                    bail!("Gerekli bağımlılıklar olmadan başlatılamıyor.");
+                }
             } else if has_command("pacman") {
-                ("sudo pacman -S gum", "sudo", &["pacman", "-S", "gum"])
+                let pkgs: Vec<&str> = missing.iter().map(|m| m.1).collect();
+                print!(
+                    "'sudo pacman -S --needed {}' ile kurulsun mu? [E/h]: ",
+                    pkgs.join(" ")
+                );
+                let _ = io::stdout().flush();
+                let mut ans = String::new();
+                io::stdin().read_line(&mut ans)?;
+                let ans = ans.trim().to_lowercase();
+                if ans.is_empty() || ans == "e" || ans == "y" {
+                    let mut cmd = Command::new("sudo");
+                    cmd.args(["pacman", "-S", "--needed"]);
+                    cmd.args(&pkgs);
+                    let status = cmd.status().context("sudo pacman çalıştırılamadı")?;
+                    if !status.success() {
+                        bail!("Bağımlılık kurulumu başarısız oldu.");
+                    }
+                } else if !has_command("gum") || !has_command("mpv") {
+                    bail!("Gerekli bağımlılıklar olmadan başlatılamıyor.");
+                }
             } else if has_command("apt-get") {
-                ("sudo apt-get install -y gum", "sudo", &["apt-get", "install", "-y", "gum"])
-            } else {
-                bail!("Arayüz için 'gum' kurulu olmalı.");
-            };
-            print!("'{hint}' ile kurulsun mu? [E/h]: ");
-            let _ = io::stdout().flush();
-            let mut ans = String::new();
-            io::stdin().read_line(&mut ans)?;
-            let ans = ans.trim().to_lowercase();
-            if ans.is_empty() || ans == "e" || ans == "y" {
-                let status = Command::new(prog)
-                    .args(args)
-                    .status()
-                    .with_context(|| format!("{hint} çalıştırılamadı"))?;
-                if !status.success() {
-                    bail!("gum kurulumu başarısız oldu.");
+                let pkgs: Vec<&str> = missing.iter().map(|m| m.2).collect();
+                print!(
+                    "'sudo apt-get install -y {}' ile kurulsun mu? [E/h]: ",
+                    pkgs.join(" ")
+                );
+                let _ = io::stdout().flush();
+                let mut ans = String::new();
+                io::stdin().read_line(&mut ans)?;
+                let ans = ans.trim().to_lowercase();
+                if ans.is_empty() || ans == "e" || ans == "y" {
+                    let _ = Command::new("sudo").args(["apt-get", "update"]).status();
+                    let mut cmd = Command::new("sudo");
+                    cmd.args(["apt-get", "install", "-y"]);
+                    cmd.args(&pkgs);
+                    let status = cmd.status().context("sudo apt-get çalıştırılamadı")?;
+                    if !status.success() {
+                        bail!("Bağımlılık kurulumu başarısız oldu.");
+                    }
+                } else if !has_command("gum") || !has_command("mpv") {
+                    bail!("Gerekli bağımlılıklar olmadan başlatılamıyor.");
                 }
             } else {
-                bail!("gum olmadan başlatılamıyor.");
+                bail!("Eksik bağımlılıklar: {}", names.join(", "));
             }
         }
         Ok(Self)
