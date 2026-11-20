@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use regex::Regex;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -64,18 +63,27 @@ impl TurkAnime {
 
     fn clean_url(raw: &str) -> Option<String> {
         let mut u = raw.trim().to_string();
-        let double_scheme = Regex::new(r"(?i)^(?:https?:)+(?=https?://)").unwrap();
-        for _ in 0..3 {
+        for _ in 0..5 {
             if u.starts_with("//") {
                 u = format!("https:{u}");
             }
-            u = double_scheme.replace(&u, "").to_string();
+            let lower = u.to_ascii_lowercase();
+            if lower.starts_with("https:http://") || lower.starts_with("https:https://") {
+                u = u[6..].to_string();
+                continue;
+            }
+            if lower.starts_with("http:http://") || lower.starts_with("http:https://") {
+                u = u[5..].to_string();
+                continue;
+            }
             if let Ok(parsed) = Url::parse(&u) {
                 let host = parsed.host_str().unwrap_or("").to_lowercase();
                 if (host == "href.li" || host == "www.href.li")
                     && let Some(q) = parsed.query()
                 {
-                    u = urlencoding::decode(q).map(|c| c.into_owned()).unwrap_or_else(|_| q.to_string());
+                    u = urlencoding::decode(q)
+                        .map(|c| c.into_owned())
+                        .unwrap_or_else(|_| q.to_string());
                     continue;
                 }
             }

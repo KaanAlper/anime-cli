@@ -10,9 +10,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
-use std::io::{self, Write};
+use std::io;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -25,7 +25,7 @@ const NORMAL: Color = Color::Rgb(0xaa, 0xbb, 0xcc);
 const GREEN: Color = Color::Rgb(0x8b, 0xb2, 0x7f);
 const GOLD: Color = Color::Rgb(0xc4, 0xb4, 0x8b);
 const MUTED: Color = Color::Rgb(0x66, 0x66, 0x66);
-const BORDER: Color = Color::Rgb(0x44, 0x44, 0x55);
+const ERROR_RED: Color = Color::Rgb(0xff, 0x5f, 0x5f);
 
 struct TerminalGuard;
 impl TerminalGuard {
@@ -53,22 +53,51 @@ where
     let msg = label.to_string();
 
     let handle = thread::spawn(move || {
+        let Ok(mut terminal) = TerminalGuard::enter() else {
+            return;
+        };
+        let _guard = TerminalGuard;
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let mut idx = 0;
         while !done_clone.load(Ordering::Relaxed) {
-            print!("\r\x1b[38;2;228;92;192m{}\x1b[0m \x1b[38;2;170;187;204m{}\x1b[0m", frames[idx], msg);
-            let _ = io::stdout().flush();
+            let frame = frames[idx];
+            let _ = terminal.draw(|f| {
+                let area = f.area();
+                let p = Paragraph::new(Line::from(vec![
+                    Span::styled(format!(" {frame} "), Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
+                    Span::styled(&msg, Style::default().fg(NORMAL)),
+                ]));
+                f.render_widget(p, area);
+            });
             idx = (idx + 1) % frames.len();
             thread::sleep(Duration::from_millis(80));
         }
-        print!("\r\x1b[2K\x1b[38;2;139;178;127m✔\x1b[0m \x1b[38;2;170;187;204m{}\x1b[0m\n", msg);
-        let _ = io::stdout().flush();
     });
 
     let result = f();
     done.store(true, Ordering::Relaxed);
     let _ = handle.join();
     result
+}
+
+pub fn show_error(msg: &str) {
+    if let Ok(mut terminal) = TerminalGuard::enter() {
+        let _guard = TerminalGuard;
+        let _ = terminal.draw(|f| {
+            let area = f.area();
+            let p = Paragraph::new(vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" [!] ", Style::default().fg(ERROR_RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(msg, Style::default().fg(ERROR_RED)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(" Devam etmek için bir tuşa basın...", Style::default().fg(MUTED))),
+            ]);
+            f.render_widget(p, area);
+        });
+        let _ = event::read();
+    }
 }
 
 pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
@@ -90,20 +119,28 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
             let area = f.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(1)
+                .horizontal_margin(2)
+                .vertical_margin(1)
                 .constraints([
                     Constraint::Length(3),
-                    Constraint::Min(5),
-                    Constraint::Length(2),
+                    Constraint::Min(3),
+                    Constraint::Length(1),
                 ])
                 .split(area);
 
-            let header = Paragraph::new(vec![
+            let header_line = if filtering || !filter_query.is_empty() {
                 Line::from(vec![
-                    Span::styled("✦ ", Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-                    Span::styled(title, Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(Span::styled(subtitle, Style::default().fg(MUTED))),
+                    Span::styled("Filtre: ", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                    Span::styled(&filter_query, Style::default().fg(NORMAL)),
+                    Span::styled("▎", Style::default().fg(GOLD)),
+                ])
+            } else {
+                Line::from(Span::styled(subtitle, Style::default().fg(MUTED).add_modifier(Modifier::ITALIC)))
+            };
+
+            let header = Paragraph::new(vec![
+                Line::from(Span::styled(title, Style::default().fg(PINK).add_modifier(Modifier::BOLD))),
+                header_line,
             ]);
             f.render_widget(header, chunks[0]);
 
@@ -111,11 +148,8 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                 .iter()
                 .map(|&orig_idx| {
                     let text = &items[orig_idx];
-                    if text.starts_with("────") {
-                        ListItem::new(Line::from(Span::styled(
-                            format!("  {text}"),
-                            Style::default().fg(BORDER),
-                        )))
+                    if text.is_empty() {
+                        ListItem::new(Line::from(""))
                     } else {
                         ListItem::new(Line::from(Span::styled(
                             text.as_str(),
@@ -125,24 +159,8 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                 })
                 .collect();
 
-            let block_title = if filtering || !filter_query.is_empty() {
-                format!(" Filtre: {filter_query} ")
-            } else {
-                String::new()
-            };
-
             let list = List::new(list_items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(BORDER))
-                        .title(Span::styled(block_title, Style::default().fg(GREEN).add_modifier(Modifier::BOLD))),
-                )
-                .highlight_style(
-                    Style::default()
-                        .fg(PINK)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(Style::default().fg(PINK).add_modifier(Modifier::BOLD))
                 .highlight_symbol("» ");
 
             f.render_stateful_widget(list, chunks[1], &mut state);
@@ -150,22 +168,22 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
             let help_line = if filtering {
                 Line::from(vec![
                     Span::styled("yaz", Style::default().fg(GREEN)),
-                    Span::styled(": filtrele  ", Style::default().fg(MUTED)),
+                    Span::styled(" filtrele • ", Style::default().fg(MUTED)),
                     Span::styled("enter", Style::default().fg(GOLD)),
-                    Span::styled(": uygula  ", Style::default().fg(MUTED)),
+                    Span::styled(" onayla • ", Style::default().fg(MUTED)),
                     Span::styled("esc", Style::default().fg(GOLD)),
-                    Span::styled(": temizle", Style::default().fg(MUTED)),
+                    Span::styled(" temizle", Style::default().fg(MUTED)),
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled("↑/↓ j/k", Style::default().fg(GOLD)),
-                    Span::styled(": gezin  ", Style::default().fg(MUTED)),
-                    Span::styled("enter", Style::default().fg(GOLD)),
-                    Span::styled(": seç  ", Style::default().fg(MUTED)),
+                    Span::styled("↑/↓", Style::default().fg(GOLD)),
+                    Span::styled(" gezin • ", Style::default().fg(MUTED)),
                     Span::styled("/", Style::default().fg(GREEN)),
-                    Span::styled(": filtrele  ", Style::default().fg(MUTED)),
+                    Span::styled(" filtrele • ", Style::default().fg(MUTED)),
+                    Span::styled("enter", Style::default().fg(GOLD)),
+                    Span::styled(" seç • ", Style::default().fg(MUTED)),
                     Span::styled("esc/q", Style::default().fg(GOLD)),
-                    Span::styled(": geri", Style::default().fg(MUTED)),
+                    Span::styled(" geri", Style::default().fg(MUTED)),
                 ])
             };
             f.render_widget(Paragraph::new(help_line), chunks[2]);
@@ -196,7 +214,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                         filtered_indices = items
                             .iter()
                             .enumerate()
-                            .filter(|(_, s)| s.to_lowercase().contains(&q))
+                            .filter(|(_, s)| !s.is_empty() && s.to_lowercase().contains(&q))
                             .map(|(i, _)| i)
                             .collect();
                         state.select(if filtered_indices.is_empty() { None } else { Some(0) });
@@ -207,7 +225,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                         filtered_indices = items
                             .iter()
                             .enumerate()
-                            .filter(|(_, s)| s.to_lowercase().contains(&q))
+                            .filter(|(_, s)| !s.is_empty() && s.to_lowercase().contains(&q))
                             .map(|(i, _)| i)
                             .collect();
                         state.select(if filtered_indices.is_empty() { None } else { Some(0) });
@@ -226,7 +244,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                     if !filtered_indices.is_empty() {
                         let cur = state.selected().unwrap_or(0);
                         let mut next = (cur + 1) % filtered_indices.len();
-                        if items[filtered_indices[next]].starts_with("────") && filtered_indices.len() > 1 {
+                        if items[filtered_indices[next]].is_empty() && filtered_indices.len() > 1 {
                             next = (next + 1) % filtered_indices.len();
                         }
                         state.select(Some(next));
@@ -236,7 +254,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                     if !filtered_indices.is_empty() {
                         let cur = state.selected().unwrap_or(0);
                         let mut prev = if cur == 0 { filtered_indices.len() - 1 } else { cur - 1 };
-                        if items[filtered_indices[prev]].starts_with("────") && filtered_indices.len() > 1 {
+                        if items[filtered_indices[prev]].is_empty() && filtered_indices.len() > 1 {
                             prev = if prev == 0 { filtered_indices.len() - 1 } else { prev - 1 };
                         }
                         state.select(Some(prev));
@@ -245,7 +263,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
                 KeyCode::Enter | KeyCode::Right => {
                     if let Some(sel) = state.selected()
                         && let Some(&orig_idx) = filtered_indices.get(sel)
-                        && !items[orig_idx].starts_with("────")
+                        && !items[orig_idx].is_empty()
                     {
                         return Ok(Some(orig_idx));
                     }
@@ -267,19 +285,20 @@ pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
             let area = f.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(2)
+                .horizontal_margin(2)
+                .vertical_margin(1)
                 .constraints([
                     Constraint::Length(2),
-                    Constraint::Length(3),
                     Constraint::Length(2),
+                    Constraint::Length(1),
                     Constraint::Min(0),
                 ])
                 .split(area);
 
-            let header = Paragraph::new(Line::from(vec![
-                Span::styled("✦ ", Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-                Span::styled(title, Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-            ]));
+            let header = Paragraph::new(Line::from(Span::styled(
+                title,
+                Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+            )));
             f.render_widget(header, chunks[0]);
 
             let display = if text.is_empty() {
@@ -294,19 +313,13 @@ pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
                     Span::styled("▎", Style::default().fg(GOLD)),
                 ])
             };
-
-            let box_widget = Paragraph::new(display).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(PINK)),
-            );
-            f.render_widget(box_widget, chunks[1]);
+            f.render_widget(Paragraph::new(display), chunks[1]);
 
             let help = Paragraph::new(Line::from(vec![
                 Span::styled("enter", Style::default().fg(GOLD)),
-                Span::styled(": ara  ", Style::default().fg(MUTED)),
+                Span::styled(" ara • ", Style::default().fg(MUTED)),
                 Span::styled("esc", Style::default().fg(GOLD)),
-                Span::styled(": geri", Style::default().fg(MUTED)),
+                Span::styled(" geri", Style::default().fg(MUTED)),
             ]));
             f.render_widget(help, chunks[2]);
         })?;

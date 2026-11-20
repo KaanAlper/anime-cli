@@ -6,11 +6,10 @@ mod ui;
 
 use anyhow::Result;
 use clap::Parser;
-use std::thread;
-use std::time::Duration;
+use std::fs;
 
 use crate::config::{
-    AppConfig, HistoryEntry, load_config, load_history, save_config, save_history_entry,
+    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config, save_history_entry,
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{pick_preferred_stream_index, play_mpv};
@@ -30,11 +29,6 @@ struct Cli {
     /// Başlangıç kaynağı (animecix, anizle, turkanime)
     #[arg(long, short)]
     source: Option<String>,
-}
-
-fn pause_error(msg: &str) {
-    eprintln!("\x1b[38;2;255;95;95m[!] {msg}\x1b[0m");
-    thread::sleep(Duration::from_millis(1600));
 }
 
 fn fetch_watch_cached(
@@ -63,11 +57,7 @@ fn watch_loop(
     loop {
         let ep = &episodes[ep_idx];
         let active_q = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
-        let subtitle = format!(
-            "Kaynak: {}  •  Kalite: {}",
-            anime.source.display_name(),
-            active_q
-        );
+        let subtitle = format!("{}  •  Kalite: {}", anime.source.display_name(), active_q);
         let title = format!("{} ( {} )", anime.title, ep.title);
 
         let mut options = vec!["İzle".to_string()];
@@ -79,7 +69,7 @@ fn watch_loop(
             ]);
         }
         options.extend([
-            "────────────────────".into(),
+            "".into(),
             "Çözünürlük seç".into(),
             "Geri".into(),
         ]);
@@ -101,7 +91,7 @@ fn watch_loop(
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
                         if let Err(e) = play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title)
                         {
-                            pause_error(&format!("Oynatma hatası: {e}"));
+                            ui::show_error(&format!("Oynatma hatası: {e}"));
                         } else {
                             let _ = save_history_entry(HistoryEntry {
                                 source: anime.source.display_name().to_string(),
@@ -113,21 +103,21 @@ fn watch_loop(
                             });
                         }
                     }
-                    Err(e) => pause_error(&format!("Bölüm oynatılamadı: {e}")),
+                    Err(e) => ui::show_error(&format!("Bölüm oynatılamadı: {e}")),
                 }
             }
             "Sonraki bölüm" => {
                 if ep_idx + 1 < episodes.len() {
                     ep_idx += 1;
                 } else {
-                    pause_error("Zaten son bölümdesiniz.");
+                    ui::show_error("Zaten son bölümdesiniz.");
                 }
             }
             "Önceki bölüm" => {
                 if ep_idx > 0 {
                     ep_idx -= 1;
                 } else {
-                    pause_error("Zaten ilk bölümdesiniz.");
+                    ui::show_error("Zaten ilk bölümdesiniz.");
                 }
             }
             "Bölüm seç" => {
@@ -150,7 +140,7 @@ fn watch_loop(
                             manual_quality = Some(labels[q_idx].clone());
                         }
                     }
-                    Err(e) => pause_error(&format!("Çözünürlükler alınamadı: {e}")),
+                    Err(e) => ui::show_error(&format!("Çözünürlükler alınamadı: {e}")),
                 }
             }
             _ => return Ok(()),
@@ -171,11 +161,11 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
     let results = match ui::with_spinner("Aranıyor...", || src.search(&query)) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
-            pause_error("Sonuç bulunamadı.");
+            ui::show_error("Sonuç bulunamadı.");
             return Ok(());
         }
         Err(e) => {
-            pause_error(&format!("Arama hatası: {e}"));
+            ui::show_error(&format!("Arama hatası: {e}"));
             return Ok(());
         }
     };
@@ -206,11 +196,11 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
     {
         Ok(eps) if !eps.is_empty() => eps,
         Ok(_) => {
-            pause_error("Bölüm bulunamadı.");
+            ui::show_error("Bölüm bulunamadı.");
             return Ok(());
         }
         Err(e) => {
-            pause_error(&format!("Bölümler alınamadı: {e}"));
+            ui::show_error(&format!("Bölümler alınamadı: {e}"));
             return Ok(());
         }
     };
@@ -231,7 +221,7 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
 fn resume_last(cfg: &mut AppConfig) -> Result<()> {
     let history = load_history();
     let Some(last) = history.first() else {
-        pause_error("Henüz izleme geçmişi yok.");
+        ui::show_error("Henüz izleme geçmişi yok.");
         return Ok(());
     };
     let source_kind = SourceKind::from_str(&last.source).unwrap_or(SourceKind::AnimeciX);
@@ -247,11 +237,63 @@ fn resume_last(cfg: &mut AppConfig) -> Result<()> {
         || src.get_episodes(&anime),
     )?;
     if episodes.is_empty() {
-        pause_error("Bölüm bulunamadı.");
+        ui::show_error("Bölüm bulunamadı.");
         return Ok(());
     }
     let idx = last.episode_index.min(episodes.len().saturating_sub(1));
     watch_loop(cfg, &anime, &episodes, idx)
+}
+
+fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<()> {
+    loop {
+        let items = vec![
+            format!("Varsayılan Kaynak ({})", active_source.display_name()),
+            format!("Varsayılan Kalite ({})", cfg.preferred_quality),
+            "Önbelleği Temizle".into(),
+            "Geri".into(),
+        ];
+
+        let Some(idx) = ui::select("Ayarlar", "Tercihlerinizi düzenleyin", &items, 0)? else {
+            return Ok(());
+        };
+
+        match idx {
+            0 => {
+                let sources: Vec<String> = SourceKind::all()
+                    .iter()
+                    .map(|s| s.display_name().to_string())
+                    .collect();
+                if let Some(s_idx) =
+                    ui::select("Varsayılan Kaynak", active_source.display_name(), &sources, 0)?
+                    && let Some(kind) = SourceKind::from_str(&sources[s_idx])
+                {
+                    *active_source = kind;
+                    cfg.default_source = kind.display_name().to_string();
+                    let _ = save_config(cfg);
+                }
+            }
+            1 => {
+                let qualities: Vec<String> = ["best", "1080p", "720p", "480p", "360p"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                if let Some(q_idx) = ui::select(
+                    "Varsayılan Kalite",
+                    &format!("Aktif: {}", cfg.preferred_quality),
+                    &qualities,
+                    0,
+                )? {
+                    cfg.preferred_quality = qualities[q_idx].clone();
+                    let _ = save_config(cfg);
+                }
+            }
+            2 => {
+                let _ = fs::remove_dir_all(cache_dir());
+                ui::show_error("Önbellek temizlendi.");
+            }
+            _ => return Ok(()),
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -276,14 +318,13 @@ fn main() -> Result<()> {
             menu.push(format!("Son İzlenene Devam Et ({})", last.anime_title));
         }
         menu.extend([
-            "────────────────────".into(),
             "Kaynak Değiştir".into(),
-            "Varsayılan Kalite".into(),
+            "Ayarlar".into(),
             "Çık".into(),
         ]);
 
         let subtitle = format!(
-            "Kaynak: {}  •  Varsayılan Kalite: {}",
+            "{}  •  Kalite: {}",
             active_source.display_name(),
             cfg.preferred_quality
         );
@@ -297,7 +338,7 @@ fn main() -> Result<()> {
             let _ = search_and_watch(&mut cfg, active_source);
         } else if choice.starts_with("Son İzlenene") {
             if let Err(e) = resume_last(&mut cfg) {
-                pause_error(&format!("Devam edilemedi: {e}"));
+                ui::show_error(&format!("Devam edilemedi: {e}"));
             }
         } else if choice == "Kaynak Değiştir" {
             let sources: Vec<String> = SourceKind::all()
@@ -312,20 +353,8 @@ fn main() -> Result<()> {
                 cfg.default_source = kind.display_name().to_string();
                 let _ = save_config(&cfg);
             }
-        } else if choice == "Varsayılan Kalite" {
-            let qualities: Vec<String> = ["best", "1080p", "720p", "480p", "360p"]
-                .into_iter()
-                .map(String::from)
-                .collect();
-            if let Some(q_idx) = ui::select(
-                "Varsayılan çözünürlük tercihi",
-                &format!("Aktif: {}", cfg.preferred_quality),
-                &qualities,
-                0,
-            )? {
-                cfg.preferred_quality = qualities[q_idx].clone();
-                let _ = save_config(&cfg);
-            }
+        } else if choice == "Ayarlar" {
+            let _ = settings_menu(&mut cfg, &mut active_source);
         } else {
             break;
         }
