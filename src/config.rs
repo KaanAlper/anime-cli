@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub preferred_quality: String,
     #[serde(default = "default_download_dir")]
     pub download_dir: String,
+    #[serde(default)]
+    pub download_while_watching: bool,
 }
 
 fn default_source() -> String {
@@ -35,6 +37,7 @@ impl Default for AppConfig {
             default_source: default_source(),
             preferred_quality: default_quality(),
             download_dir: default_download_dir(),
+            download_while_watching: false,
         }
     }
 }

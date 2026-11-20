@@ -1,4 +1,5 @@
 mod config;
+mod download;
 mod models;
 mod player;
 mod sources;
@@ -73,6 +74,7 @@ fn watch_loop(
         options.extend([
             "".into(),
             "Çözünürlük seç".into(),
+            "İndir".into(),
             "Geri".into(),
         ]);
 
@@ -136,6 +138,20 @@ fn watch_loop(
                                 break;
                             }
                             let stream = &watch.streams[idx];
+                            if cfg.download_while_watching {
+                                let out = download::target_file_path(
+                                    &cfg.download_dir,
+                                    &anime.title,
+                                    &ep.title,
+                                );
+                                if !out.exists() {
+                                    let _ = download::spawn_background_download(
+                                        stream,
+                                        watch.subtitle_url.as_deref(),
+                                        &out,
+                                    );
+                                }
+                            }
                             println!(
                                 "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}",
                                 n + 1,
@@ -211,6 +227,9 @@ fn watch_loop(
                     }
                     Err(e) => ui::show_error(&format!("Çözünürlükler alınamadı: {e}")),
                 }
+            }
+            "İndir" => {
+                download_menu(cfg, anime, episodes, ep_idx, manual_quality.as_deref())?;
             }
             _ => return Ok(()),
         }
@@ -313,11 +332,123 @@ fn resume_last(cfg: &mut AppConfig) -> Result<()> {
     watch_loop(cfg, &anime, &episodes, idx)
 }
 
+fn download_range(
+    cfg: &AppConfig,
+    anime: &Anime,
+    episodes: &[Episode],
+    start_idx: usize,
+    end_idx: usize,
+    manual_quality: Option<&str>,
+) {
+    let q_pref = manual_quality.unwrap_or(&cfg.preferred_quality);
+    let total = end_idx - start_idx + 1;
+    let mut ok_count = 0usize;
+
+    for (offset, idx) in (start_idx..=end_idx).enumerate() {
+        if player::take_interrupted() {
+            break;
+        }
+        let ep = &episodes[idx];
+        println!(
+            "\n\x1b[38;2;228;92;192m⬇\x1b[0m İndiriliyor ({}/{}): {}",
+            offset + 1,
+            total,
+            ep.title
+        );
+        let Ok(watch) = fetch_watch_cached(anime.source, anime, episodes, idx) else {
+            eprintln!("\x1b[38;2;255;95;95m[!] Akış alınamadı: {}\x1b[0m", ep.title);
+            continue;
+        };
+        let stream_idx = pick_preferred_stream_index(&watch.streams, q_pref);
+        let stream = &watch.streams[stream_idx];
+        let out = download::target_file_path(&cfg.download_dir, &anime.title, &ep.title);
+
+        if let Err(e) = download::download_stream(stream, watch.subtitle_url.as_deref(), &out) {
+            eprintln!("\x1b[38;2;255;95;95m[!] İndirme hatası ({}): {e}\x1b[0m", ep.title);
+        } else {
+            ok_count += 1;
+        }
+    }
+
+    println!(
+        "\n\x1b[38;2;139;178;127m✔\x1b[0m Tamamlandı: {ok_count}/{total} bölüm indirildi -> {}",
+        cfg.download_dir
+    );
+    println!("\x1b[38;2;102;102;102mDevam etmek için Enter'a basın...\x1b[0m");
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+}
+
+fn download_menu(
+    cfg: &AppConfig,
+    anime: &Anime,
+    episodes: &[Episode],
+    ep_idx: usize,
+    manual_quality: Option<&str>,
+) -> Result<()> {
+    if anime.is_movie || episodes.len() == 1 {
+        download_range(cfg, anime, episodes, 0, 0, manual_quality);
+        return Ok(());
+    }
+
+    let options = vec![
+        format!("Bu bölümü indir ({})", episodes[ep_idx].title),
+        format!("Hepsini indir (1-{})", episodes.len()),
+        "Bölüm aralığı indir (ör. 5-12)".to_string(),
+        "Geri".to_string(),
+    ];
+
+    let Some(choice) = ui::select(
+        "İndir",
+        &format!("Klasör: {}", cfg.download_dir),
+        &options,
+        0,
+    )?
+    else {
+        return Ok(());
+    };
+
+    match choice {
+        0 => download_range(cfg, anime, episodes, ep_idx, ep_idx, manual_quality),
+        1 => download_range(
+            cfg,
+            anime,
+            episodes,
+            0,
+            episodes.len().saturating_sub(1),
+            manual_quality,
+        ),
+        2 => {
+            if let Some(range_str) = ui::input(
+                &format!("Bölüm Aralığı (1-{})", episodes.len()),
+                "ör. 5-12 veya 5",
+            )? {
+                match download::parse_episode_range(&range_str, episodes.len()) {
+                    Ok((start, end)) => {
+                        download_range(cfg, anime, episodes, start, end, manual_quality);
+                    }
+                    Err(e) => ui::show_error(&format!("{e}")),
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<()> {
     loop {
+        let dl_watch_box = if cfg.download_while_watching {
+            "[x] Açık"
+        } else {
+            "[ ] Kapalı"
+        };
         let items = vec![
             format!("Varsayılan Kaynak ({})", active_source.display_name()),
             format!("Varsayılan Kalite ({})", cfg.preferred_quality),
+            format!("İndirme Dizini ({})", cfg.download_dir),
+            format!("İzlerken İndir ({dl_watch_box})"),
             "Önbelleği Temizle".into(),
             "Geri".into(),
         ];
@@ -357,6 +488,16 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
                 }
             }
             2 => {
+                if let Some(new_dir) = ui::input("İndirme Dizini", &cfg.download_dir)? {
+                    cfg.download_dir = new_dir;
+                    let _ = save_config(cfg);
+                }
+            }
+            3 => {
+                cfg.download_while_watching = !cfg.download_while_watching;
+                let _ = save_config(cfg);
+            }
+            4 => {
                 let _ = fs::remove_dir_all(cache_dir());
                 ui::show_error("Önbellek temizlendi.");
             }
@@ -403,6 +544,18 @@ fn main() -> Result<()> {
         );
 
         let Some(idx) = ui::select("anime-cli", &subtitle, &menu, 0)? else {
+            if player::take_interrupted() {
+                let confirm = vec!["Evet, çık".to_string(), "Hayır, menüde kal".to_string()];
+                match ui::select(
+                    "Çıkmak istiyor musunuz?",
+                    "Çıkmak için tekrar Ctrl+C yapın veya Evet'i seçin",
+                    &confirm,
+                    1,
+                )? {
+                    None | Some(0) => break,
+                    _ => continue,
+                }
+            }
             break;
         };
 
