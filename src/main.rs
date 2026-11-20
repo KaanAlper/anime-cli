@@ -192,9 +192,21 @@ fn watch_loop(
                     } else {
                         None
                     };
+                    if let Some(ref entry) = history_entry {
+                        let _ = config::save_history_entry(entry.clone());
+                    }
                     bus::emit(bus::AppEvent::PlaybackEnded {
                         history: history_entry,
                     });
+                    if played && !anime.is_movie && episodes.len() > 1 {
+                        let (ep_titles, _) =
+                            format_episode_choices(anime, episodes, cfg.show_watched_icon, false);
+                        if let Some(idx) =
+                            ui::select("Bölüm seç", &anime.title, &ep_titles, ep_idx)?
+                        {
+                            ep_idx = idx;
+                        }
+                    }
                     continue;
                 }
                 let res = ui::with_spinner("Akış hazırlanıyor...", || {
@@ -327,6 +339,9 @@ fn watch_loop(
                         } else {
                             None
                         };
+                        if let Some(ref entry) = history_entry {
+                            let _ = config::save_history_entry(entry.clone());
+                        }
                         bus::emit(bus::AppEvent::PlaybackEnded {
                             history: history_entry,
                         });
@@ -335,6 +350,18 @@ fn watch_loop(
                             && let Some(e) = last_err
                         {
                             ui::show_error(&format!("Oynatma hatası: {e}"));
+                        } else if played && !anime.is_movie && episodes.len() > 1 {
+                            let (ep_titles, _) = format_episode_choices(
+                                anime,
+                                episodes,
+                                cfg.show_watched_icon,
+                                false,
+                            );
+                            if let Some(idx) =
+                                ui::select("Bölüm seç", &anime.title, &ep_titles, ep_idx)?
+                            {
+                                ep_idx = idx;
+                            }
                         }
                     }
                     Err(e) => ui::show_error(&format!("Bölüm oynatılamadı: {e}")),

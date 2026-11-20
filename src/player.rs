@@ -311,7 +311,8 @@ end)
     };
 
     let mut cmd = Command::new("mpv");
-    cmd.arg("--fullscreen");
+    cmd.arg("--fullscreen")
+        .arg("--keep-open=no");
     if remember_position {
         cmd.arg("--save-position-on-quit");
     }

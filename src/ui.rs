@@ -270,10 +270,20 @@ pub fn select_highlighted(
     items: &[String],
     initial: usize,
 ) -> Result<Option<usize>> {
+    select_native(title, subtitle, items, initial, true)
+}
+
+fn select_native(
+    title: &str,
+    subtitle: &str,
+    items: &[String],
+    initial: usize,
+    highlight: bool,
+) -> Result<Option<usize>> {
     let clean_items: Vec<(usize, &String)> = items
         .iter()
         .enumerate()
-        .filter(|(_, s)| !s.trim().is_empty())
+        .filter(|(_, s)| !strip_ansi(s).trim().is_empty())
         .collect();
     if clean_items.is_empty() {
         return Ok(None);
@@ -299,28 +309,32 @@ pub fn select_highlighted(
 
     loop {
         let q_lower = query.to_lowercase();
-        let filtered: Vec<(usize, &String, i32)> = if q_lower.is_empty() {
-            clean_items.iter().map(|&(i, s)| (i, s, 0)).collect()
+        let filtered: Vec<(usize, &String, String, i32)> = if q_lower.is_empty() {
+            clean_items
+                .iter()
+                .map(|&(i, s)| (i, s, strip_ansi(s), 0))
+                .collect()
         } else {
             let words: Vec<&str> = q_lower.split_whitespace().collect();
-            let mut matched: Vec<(usize, &String, i32)> = clean_items
+            let mut matched: Vec<(usize, &String, String, i32)> = clean_items
                 .iter()
                 .filter_map(|&(i, s)| {
-                    let sl = s.to_lowercase();
+                    let plain = strip_ansi(s);
+                    let sl = plain.to_lowercase();
                     if sl.starts_with(&q_lower) {
-                        Some((i, s, 0))
+                        Some((i, s, plain, 0))
                     } else if sl.contains(&q_lower) {
-                        Some((i, s, 1))
+                        Some((i, s, plain, 1))
                     } else if words.iter().all(|w| sl.contains(w)) {
-                        Some((i, s, 2))
+                        Some((i, s, plain, 2))
                     } else if fuzzy_match_positions(&sl, &q_lower).is_some() {
-                        Some((i, s, 3))
+                        Some((i, s, plain, 3))
                     } else {
                         None
                     }
                 })
                 .collect();
-            matched.sort_by_key(|&(_, _, score)| score);
+            matched.sort_by_key(|&(_, _, _, score)| score);
             matched
         };
 
@@ -356,14 +370,25 @@ pub fn select_highlighted(
 
         for row in 0..max_vis {
             let idx = scroll + row;
-            if let Some(&(_, item, _)) = filtered.get(idx) {
+            if let Some((_, raw_item, plain_item, _)) = filtered.get(idx) {
                 if idx == cursor {
-                    let _ = write!(
-                        buf,
-                        "\x1b[38;2;228;92;192m» \x1b[1m\x1b[48;2;244;214;236m\x1b[38;2;0;0;0m {item} \x1b[0m\x1b[K\r\n"
-                    );
+                    if highlight {
+                        let _ = write!(
+                            buf,
+                            "\x1b[38;2;228;92;192m» \x1b[1m\x1b[48;2;244;214;236m\x1b[38;2;0;0;0m {plain_item} \x1b[0m\x1b[K\r\n"
+                        );
+                    } else {
+                        let _ = write!(
+                            buf,
+                            "\x1b[38;2;228;92;192m» {plain_item}\x1b[0m\x1b[K\r\n"
+                        );
+                    }
+                } else if raw_item.contains('\x1b') && query.is_empty() {
+                    let _ = write!(buf, "   {raw_item}\x1b[0m\x1b[K\r\n");
+                } else if raw_item.contains('\x1b') {
+                    let _ = write!(buf, "   \x1b[38;2;115;120;135m{plain_item}\x1b[0m\x1b[K\r\n");
                 } else {
-                    let rendered = highlight_non_selected_match(item, &query);
+                    let rendered = highlight_non_selected_match(plain_item, &query);
                     let _ = write!(buf, "   {rendered}\x1b[K\r\n");
                 }
             } else if row == 0 && filtered.is_empty() {
@@ -391,7 +416,7 @@ pub fn select_highlighted(
             return Ok(None);
         }
         if slice == [13] || slice == [10] {
-            return Ok(filtered.get(cursor).map(|&(orig_idx, _, _)| orig_idx));
+            return Ok(filtered.get(cursor).map(|&(orig_idx, _, _, _)| orig_idx));
         }
         if slice == [127] || slice == [8] {
             query.pop();
@@ -436,6 +461,12 @@ pub fn select_highlighted(
 }
 
 pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
+    let has_ansi = items.iter().any(|s| s.contains('\x1b'));
+    let non_empty_count = items.iter().filter(|s| !s.trim().is_empty()).count();
+    if non_empty_count > 8 || has_ansi {
+        return select_native(title, subtitle, items, initial, false);
+    }
+
     let clean_items: Vec<(usize, &String)> = items
         .iter()
         .enumerate()
@@ -453,53 +484,24 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
         .collect::<Vec<_>>()
         .join("\n");
 
-    let use_filter = clean_items.len() > 8;
     let mut cmd = Command::new("gum");
-    if use_filter {
-        cmd.args([
-            "filter",
-            "--placeholder",
-            "Filtrele...",
-            "--placeholder.foreground",
-            "#8899aa",
-            "--indicator",
-            "» ",
-            "--indicator.foreground",
-            "#e45cc0",
-            "--selected-prefix",
-            "",
-            "--unselected-prefix",
-            "",
-            "--cursor-text.foreground",
-            "#e45cc0",
-            "--text.foreground",
-            "#ffffff",
-            "--match.foreground",
-            "#8bb27f",
-            "--prompt.foreground",
-            "#c4b48b",
-            "--height",
-            "18",
-        ]);
-    } else {
-        cmd.args([
-            "choose",
-            "--cursor",
-            "» ",
-            "--cursor.foreground",
-            "#e45cc0",
-            "--item.foreground",
-            "#ffffff",
-            "--selected.foreground",
-            "#e45cc0",
-            "--height",
-            "18",
-        ]);
-        if initial > 0
-            && let Some((_, init_item)) = clean_items.get(initial)
-        {
-            cmd.arg("--selected").arg(init_item.as_str());
-        }
+    cmd.args([
+        "choose",
+        "--cursor",
+        "» ",
+        "--cursor.foreground",
+        "#e45cc0",
+        "--item.foreground",
+        "#ffffff",
+        "--selected.foreground",
+        "#e45cc0",
+        "--height",
+        "18",
+    ]);
+    if initial > 0
+        && let Some((_, init_item)) = clean_items.get(initial)
+    {
+        cmd.arg("--selected").arg(init_item.as_str());
     }
 
     let mut child = cmd
