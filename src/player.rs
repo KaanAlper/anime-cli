@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use std::process::Command;
 
@@ -49,6 +49,8 @@ pub fn play_mpv(
     let mut cmd = Command::new("mpv");
     cmd.arg("--fullscreen")
         .arg("--save-position-on-quit")
+        .arg("--really-quiet")
+        .arg("--no-terminal")
         .arg(format!("--title={title}"))
         .arg(format!("--force-media-title={title}"))
         .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36");
@@ -72,8 +74,14 @@ pub fn play_mpv(
         .context("mpv başlatılamadı (sisteminizde mpv yüklü mü?)")?;
 
     if !status.success() && status.code() != Some(4) {
-        // mpv exit code 4 is quit via key/window close in some setups, usually 0
-        eprintln!("[!] mpv çıkış kodu: {:?}", status.code());
+        let is_direct = stream.url.contains(".mp4") || stream.url.contains(".m3u8");
+        if !is_direct {
+            bail!(
+                "mpv oynatamadı (kod: {:?}). Embed bağlantıları için 'yt-dlp' kurulu olmalı (sudo pacman -S yt-dlp).",
+                status.code()
+            );
+        }
+        bail!("mpv oynatamadı (çıkış kodu: {:?})", status.code());
     }
 
     Ok(())

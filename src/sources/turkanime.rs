@@ -201,7 +201,7 @@ impl AnimeSource for TurkAnime {
         let data = self.fetch_json(&format!("animeler/{anime_slug}/{ep_slug}.json"))?;
         let arr = data.as_array().context("Bölüm akış verisi bulunamadı")?;
 
-        let mut streams = Vec::new();
+        let mut streams_with_prio: Vec<(usize, StreamOption)> = Vec::new();
         let mut seen = HashSet::new();
 
         for item in arr {
@@ -252,12 +252,19 @@ impl AnimeSource for TurkAnime {
                     }
                 });
 
-            streams.push(StreamOption {
-                label,
-                url,
-                referer,
-            });
+            let prio = player_priority(&player);
+            streams_with_prio.push((
+                prio,
+                StreamOption {
+                    label,
+                    url,
+                    referer,
+                },
+            ));
         }
+
+        streams_with_prio.sort_by_key(|(prio, _)| *prio);
+        let streams: Vec<StreamOption> = streams_with_prio.into_iter().map(|(_, s)| s).collect();
 
         if streams.is_empty() {
             bail!("Bu bölüm için çalışan arşiv bağlantısı bulunamadı");
@@ -268,4 +275,36 @@ impl AnimeSource for TurkAnime {
             subtitle_url: None,
         })
     }
+}
+
+fn player_priority(player: &str) -> usize {
+    let norm = match player {
+        "OK.RU" => "ODNOKLASSNIKI",
+        "XDVID" => "HDVID",
+        other => other,
+    };
+    const SUPPORTED: &[&str] = &[
+        "YADISK",
+        "ALUCARD(BETA)",
+        "GDRIVE",
+        "MAIL",
+        "PIXELDRAIN",
+        "AMATERASU(BETA)",
+        "HDVID",
+        "ODNOKLASSNIKI",
+        "DAILYMOTION",
+        "SIBNET",
+        "VK",
+        "VIDMOLY",
+        "SENDVID",
+        "MYVI",
+    ];
+    if let Some(pos) = SUPPORTED.iter().position(|&p| p == norm) {
+        return pos;
+    }
+    const LAST: &[&str] = &["MP4UPLOAD", "CLONE", "STREAMSB", "YOURUPLOAD", "UQLOAD"];
+    if LAST.contains(&norm) {
+        return 1000;
+    }
+    500
 }
