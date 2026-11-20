@@ -224,21 +224,22 @@ impl AnimeSource for TurkAnime {
                 continue;
             };
 
-            let fansub = item
+            let fansub_raw = item
                 .get("fansub")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .trim();
+            let fansub_name = if fansub_raw.is_empty() {
+                "Varsayılan"
+            } else {
+                fansub_raw
+            };
 
-            if !seen.insert((url.clone(), fansub.to_string())) {
+            if !seen.insert((url.clone(), fansub_name.to_string())) {
                 continue;
             }
 
-            let label = if fansub.is_empty() {
-                player.clone()
-            } else {
-                format!("{player} - {fansub}")
-            };
+            let label = player.clone();
 
             let referer = item
                 .get("referer")
@@ -259,11 +260,7 @@ impl AnimeSource for TurkAnime {
                     label,
                     url,
                     referer,
-                    fansub: if fansub.is_empty() {
-                        None
-                    } else {
-                        Some(fansub.to_string())
-                    },
+                    fansub: Some(fansub_name.to_string()),
                 },
             ));
         }

@@ -75,6 +75,64 @@ pub fn pick_preferred_stream_index(streams: &[StreamOption], preferred_quality: 
         .unwrap_or(0)
 }
 
+/// Builds the full playback fallback order grouped by fansub:
+/// 1. If `selected_fansub` is Some(f), try all players of `f` first (preferred player/quality first),
+///    then all players of every other fansub in order.
+/// 2. If `selected_fansub` is None ("Tümü"), iterate fansub by fansub, trying all players of each
+///    fansub (preferred player/quality first within each fansub) before moving to the next fansub.
+pub fn build_playback_order(
+    streams: &[StreamOption],
+    selected_fansub: Option<&str>,
+    preferred_quality: &str,
+) -> Vec<usize> {
+    if streams.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect distinct fansub groups in appearance order
+    let mut fansub_groups: Vec<Option<&str>> = Vec::new();
+    for s in streams {
+        let key = s.fansub.as_deref();
+        if !fansub_groups.contains(&key) {
+            fansub_groups.push(key);
+        }
+    }
+
+    // Move selected_fansub to the front if specified
+    if let Some(sel) = selected_fansub
+        && let Some(pos) = fansub_groups.iter().position(|&k| k == Some(sel))
+    {
+        let chosen = fansub_groups.remove(pos);
+        fansub_groups.insert(0, chosen);
+    }
+
+    let mut order = Vec::with_capacity(streams.len());
+    for group in fansub_groups {
+        let group_indices: Vec<usize> = streams
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.fansub.as_deref() == group)
+            .map(|(i, _)| i)
+            .collect();
+        if group_indices.is_empty() {
+            continue;
+        }
+        let group_streams: Vec<StreamOption> =
+            group_indices.iter().map(|&i| streams[i].clone()).collect();
+        let best_local = pick_preferred_stream_index(&group_streams, preferred_quality);
+        let best_global = group_indices[best_local];
+
+        order.push(best_global);
+        for idx in group_indices {
+            if idx != best_global {
+                order.push(idx);
+            }
+        }
+    }
+
+    order
+}
+
 pub fn resolve_embed_with_ytdlp(url: &str) -> Result<String> {
     let ytdlp = if has_command("yt-dlp") {
         "yt-dlp"
@@ -220,5 +278,22 @@ mod tests {
             StreamOption { label: "Stream C".into(), url: "u3".into(), referer: None, fansub: None },
         ];
         assert_eq!(pick_preferred_stream_index(&ordered_labels, "best"), 0);
+    }
+
+    #[test]
+    fn builds_fansub_grouped_fallback_order() {
+        let streams = vec![
+            StreamOption { label: "Player1".into(), url: "u1".into(), referer: None, fansub: Some("Fansub A".into()) },
+            StreamOption { label: "Player1".into(), url: "u2".into(), referer: None, fansub: Some("Fansub B".into()) },
+            StreamOption { label: "Player2".into(), url: "u3".into(), referer: None, fansub: Some("Fansub A".into()) },
+            StreamOption { label: "Player2".into(), url: "u4".into(), referer: None, fansub: Some("Fansub B".into()) },
+        ];
+        // Selected Fansub B + Player2 -> tries (B, Player2), (B, Player1), then (A, Player2), (A, Player1)
+        let order = build_playback_order(&streams, Some("Fansub B"), "Player2");
+        assert_eq!(order, vec![3, 1, 2, 0]);
+
+        // All fansubs + best -> tries all of A first, then all of B
+        let all_order = build_playback_order(&streams, None, "best");
+        assert_eq!(all_order, vec![0, 2, 1, 3]);
     }
 }

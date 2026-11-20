@@ -15,7 +15,7 @@ use crate::config::{
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{
-    has_ytdlp, is_direct_stream_url, pick_preferred_stream_index, play_mpv,
+    build_playback_order, has_ytdlp, is_direct_stream_url, play_mpv,
 };
 use crate::sources::get_source;
 
@@ -109,49 +109,12 @@ fn watch_loop(
                             continue;
                         }
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
-                        // Filter streams by selected fansub first if set, then fallback to others
-                        let matching_indices: Vec<usize> = if let Some(ref fs_name) = selected_fansub {
-                            let mut matched: Vec<usize> = watch
-                                .streams
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, s)| s.fansub.as_deref() == Some(fs_name.as_str()))
-                                .map(|(i, _)| i)
-                                .collect();
-                            if matched.is_empty() {
-                                (0..watch.streams.len()).collect()
-                            } else {
-                                let rest: Vec<usize> = (0..watch.streams.len())
-                                    .filter(|i| !matched.contains(i))
-                                    .collect();
-                                matched.extend(rest);
-                                matched
-                            }
-                        } else {
-                            (0..watch.streams.len()).collect()
-                        };
-
-                        let primary_idx = if let Some(ref fs_name) = selected_fansub {
-                            let fs_streams: Vec<_> = watch
-                                .streams
-                                .iter()
-                                .filter(|s| s.fansub.as_deref() == Some(fs_name.as_str()))
-                                .cloned()
-                                .collect();
-                            if fs_streams.is_empty() {
-                                pick_preferred_stream_index(&watch.streams, q_pref)
-                            } else {
-                                let local_idx = pick_preferred_stream_index(&fs_streams, q_pref);
-                                let chosen_url = &fs_streams[local_idx].url;
-                                watch
-                                    .streams
-                                    .iter()
-                                    .position(|s| &s.url == chosen_url && s.fansub.as_deref() == Some(fs_name.as_str()))
-                                    .unwrap_or(0)
-                            }
-                        } else {
-                            pick_preferred_stream_index(&watch.streams, q_pref)
-                        };
+                        let candidate_indices = build_playback_order(
+                            &watch.streams,
+                            selected_fansub.as_deref(),
+                            q_pref,
+                        );
+                        let primary_idx = candidate_indices[0];
                         let primary = &watch.streams[primary_idx];
 
                         if !is_direct_stream_url(&primary.url) && !has_ytdlp() {
@@ -177,14 +140,6 @@ fn watch_loop(
                                 }
                             } else {
                                 continue;
-                            }
-                        }
-
-                        // Build candidate order: preferred first, then fallback to other streams if it fails
-                        let mut candidate_indices = vec![primary_idx];
-                        for i in matching_indices {
-                            if i != primary_idx && candidate_indices.len() < 6 {
-                                candidate_indices.push(i);
                             }
                         }
 
@@ -217,11 +172,17 @@ fn watch_loop(
                                 break;
                             }
                             let stream = &watch.streams[idx];
+                            let fs_tag = stream
+                                .fansub
+                                .as_deref()
+                                .map(|f| format!(" [{f}]"))
+                                .unwrap_or_default();
                             println!(
-                                "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}",
+                                "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}{}",
                                 n + 1,
                                 total,
-                                stream.label
+                                stream.label,
+                                fs_tag
                             );
                             match play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title) {
                                 Ok(()) => {
@@ -310,6 +271,27 @@ fn watch_loop(
                                 } else {
                                     Some(choices[f_idx].clone())
                                 };
+
+                                // Fansub seçildikten sonra o fansub'ın oynatıcı/çözünürlük seçimini aç
+                                let mut labels: Vec<String> = vec!["Tümü (Otomatik)".to_string()];
+                                for s in &watch.streams {
+                                    let matches_fs = selected_fansub
+                                        .as_deref()
+                                        .is_none_or(|f| s.fansub.as_deref() == Some(f));
+                                    if matches_fs && !labels.contains(&s.label) {
+                                        labels.push(s.label.clone());
+                                    }
+                                }
+                                if labels.len() > 1
+                                    && let Some(q_idx) =
+                                        ui::select(quality_label, &ep.title, &labels, 0)?
+                                {
+                                    manual_quality = if q_idx == 0 {
+                                        None
+                                    } else {
+                                        Some(labels[q_idx].clone())
+                                    };
+                                }
                             }
                         }
                     }
@@ -322,22 +304,25 @@ fn watch_loop(
                 });
                 match res {
                     Ok(watch) => {
-                        let labels: Vec<String> = watch
-                            .streams
-                            .iter()
-                            .filter(|s| {
-                                selected_fansub
-                                    .as_deref()
-                                    .is_none_or(|f| s.fansub.as_deref() == Some(f))
-                            })
-                            .map(|s| s.label.clone())
-                            .collect();
-                        if labels.is_empty() {
+                        let mut labels: Vec<String> = vec!["Tümü (Otomatik)".to_string()];
+                        for s in &watch.streams {
+                            let matches_fs = selected_fansub
+                                .as_deref()
+                                .is_none_or(|f| s.fansub.as_deref() == Some(f));
+                            if matches_fs && !labels.contains(&s.label) {
+                                labels.push(s.label.clone());
+                            }
+                        }
+                        if labels.len() <= 1 {
                             ui::show_error("Seçili fansub için akış bulunamadı.");
                         } else if let Some(q_idx) =
                             ui::select(quality_label, &ep.title, &labels, 0)?
                         {
-                            manual_quality = Some(labels[q_idx].clone());
+                            manual_quality = if q_idx == 0 {
+                                None
+                            } else {
+                                Some(labels[q_idx].clone())
+                            };
                         }
                     }
                     Err(e) => ui::show_error(&format!("Seçenekler alınamadı: {e}")),
