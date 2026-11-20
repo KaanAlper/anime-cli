@@ -212,9 +212,9 @@ fn select_inner(
     let mut cmd = Command::new("gum");
     if use_filter {
         let (cursor_fg, cursor_bg, match_fg) = if highlight {
-            ("#000000", "#f4d6ec", "#000000")
+            ("#000000", "#f4d6ec", "#8bb27f")
         } else {
-            ("#e45cc0", "", "#e45cc0")
+            ("#e45cc0", "", "#8bb27f")
         };
         cmd.args([
             "filter",
