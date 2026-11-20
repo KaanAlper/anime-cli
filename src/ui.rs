@@ -167,6 +167,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], _initial: usize) ->
     let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .context("gum çalıştırılamadı")?;
 
@@ -193,7 +194,7 @@ pub fn select(title: &str, subtitle: &str, items: &[String], _initial: usize) ->
 pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
     print_header(title, "");
 
-    let output = Command::new("gum")
+    let child = Command::new("gum")
         .args([
             "input",
             "--placeholder",
@@ -205,9 +206,13 @@ pub fn input(title: &str, placeholder: &str) -> Result<Option<String>> {
             "--cursor.foreground",
             "#e45cc0",
         ])
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .stdout(Stdio::piped())
-        .output()
+        .spawn()
         .context("gum input çalıştırılamadı")?;
+
+    let output = child.wait_with_output()?;
 
     if !output.status.success() {
         return Ok(None);
