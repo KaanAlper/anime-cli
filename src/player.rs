@@ -55,13 +55,14 @@ pub fn pick_preferred_stream_index(streams: &[StreamOption], preferred_quality: 
     }
 
     let pref = preferred_quality.trim().to_lowercase();
-    if !pref.is_empty() && pref != "best" && pref != "auto" {
-        if let Some(idx) = streams
+    if !pref.is_empty()
+        && pref != "best"
+        && pref != "auto"
+        && let Some(idx) = streams
             .iter()
             .position(|s| s.label.to_lowercase().contains(&pref))
-        {
-            return idx;
-        }
+    {
+        return idx;
     }
 
     // Default ("best"): pick the stream with the highest numeric resolution (e.g., 1080 > 720 > 480).

@@ -165,7 +165,7 @@ impl AnimeSource for AnimeciX {
     fn get_episodes(&self, anime: &Anime) -> Result<Vec<Episode>> {
         if anime.is_movie {
             return Ok(vec![Episode {
-                id: anime.id.clone(),
+                id: format!("movie:{}", anime.id),
                 title: format!("{} (Film)", anime.title),
                 number: 1,
                 season_num: 1,
@@ -222,6 +222,25 @@ impl AnimeSource for AnimeciX {
             }
         }
 
+        // Fallback for OVAs/Movies tagged with title_type="anime" instead of "movie"
+        if episodes.is_empty() {
+            let title_url = format!("{BASE_URL}secure/titles/{}?titleId={}", anime.id, anime.id);
+            if let Ok(title_data) = self.get_json(&title_url)
+                && title_data
+                    .get("title")
+                    .and_then(|t| t.get("videos"))
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|arr| !arr.is_empty())
+            {
+                episodes.push(Episode {
+                    id: format!("movie:{}", anime.id),
+                    title: format!("{} (Film/OVA)", anime.title),
+                    number: 1,
+                    season_num: 1,
+                });
+            }
+        }
+
         Ok(episodes)
     }
 
@@ -231,7 +250,7 @@ impl AnimeSource for AnimeciX {
         episode: &Episode,
         _ep_index_in_season: usize,
     ) -> Result<WatchData> {
-        if anime.is_movie {
+        if anime.is_movie || episode.id.starts_with("movie:") {
             let url = format!("{BASE_URL}secure/titles/{}?titleId={}", anime.id, anime.id);
             let data = self.get_json(&url)?;
             let videos = data

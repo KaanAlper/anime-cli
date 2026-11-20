@@ -104,6 +104,10 @@ fn watch_loop(
                 });
                 match res {
                     Ok(watch) => {
+                        if watch.streams.is_empty() {
+                            ui::show_error("Bu bölüm için oynatılabilir akış bulunamadı.");
+                            continue;
+                        }
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
                         // Filter streams by selected fansub first if set, then fallback to others
                         let matching_indices: Vec<usize> = if let Some(ref fs_name) = selected_fansub {
@@ -328,7 +332,9 @@ fn watch_loop(
                             })
                             .map(|s| s.label.clone())
                             .collect();
-                        if let Some(q_idx) =
+                        if labels.is_empty() {
+                            ui::show_error("Seçili fansub için akış bulunamadı.");
+                        } else if let Some(q_idx) =
                             ui::select(quality_label, &ep.title, &labels, 0)?
                         {
                             manual_quality = Some(labels[q_idx].clone());

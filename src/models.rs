@@ -45,6 +45,7 @@ pub struct Anime {
 pub struct Episode {
     pub id: String,
     pub title: String,
+    #[allow(dead_code)]
     pub number: usize,
     pub season_num: usize,
 }

@@ -378,8 +378,8 @@ impl AnimeSource for Anizle {
                 .collect();
         }
 
-        let mut streams = Vec::new();
-        for (fansub_name, tr_url) in translators.iter().take(4) {
+        let mut jobs: Vec<(String, String, String)> = Vec::new();
+        for (fansub_name, tr_url) in translators.iter().take(3) {
             let Ok(resp) = self
                 .client
                 .get(tr_url)
@@ -399,23 +399,36 @@ impl AnimeSource for Anizle {
                     };
                     let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("Player");
                     let lower_name = name.to_lowercase();
-                    // Prefer Anizm's own players first (fast, direct HLS)
                     if lower_name.contains("beta")
                         || lower_name.contains("aincrad")
                         || lower_name.contains("anizm")
-                        || lower_name.contains("sistenn")
                     {
-                        let mut resolved = self.resolve_video(
-                            &origin,
-                            &vid_id.to_string(),
-                            name,
-                            Some(fansub_name.as_str()),
-                        );
-                        streams.append(&mut resolved);
+                        jobs.push((vid_id.to_string(), name.to_string(), fansub_name.clone()));
                     }
                 }
             }
         }
+
+        // Resolve video players in parallel for speed
+        let mut streams = Vec::new();
+        std::thread::scope(|s| {
+            let handles: Vec<_> = jobs
+                .iter()
+                .take(8)
+                .map(|(vid_id, name, fansub_name)| {
+                    let orig = origin.as_str();
+                    s.spawn(move || {
+                        self.resolve_video(orig, vid_id, name, Some(fansub_name.as_str()))
+                    })
+                })
+                .collect();
+
+            for h in handles {
+                if let Ok(mut resolved) = h.join() {
+                    streams.append(&mut resolved);
+                }
+            }
+        });
 
         if streams.is_empty() {
             bail!("Anizle bu bölüm için oynatılabilir HLS akışı bulamadı");
