@@ -103,14 +103,17 @@ pub fn play_mpv(
         .context("mpv başlatılamadı (sisteminizde mpv yüklü mü?)")?;
 
     if !status.success() && status.code() != Some(4) {
-        let is_direct = stream.url.contains(".mp4") || stream.url.contains(".m3u8");
-        if !is_direct {
+        let is_direct = is_direct_stream_url(&stream.url);
+        if !is_direct && !has_ytdlp() {
             bail!(
                 "mpv oynatamadı (kod: {:?}). Embed bağlantıları için 'yt-dlp' kurulu olmalı (sudo pacman -S yt-dlp).",
                 status.code()
             );
         }
-        bail!("mpv oynatamadı (çıkış kodu: {:?})", status.code());
+        bail!(
+            "Video açılamadı (mpv çıkış kodu: {:?}) — bağlantı ölü veya engelli olabilir.",
+            status.code()
+        );
     }
 
     Ok(())

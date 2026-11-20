@@ -88,10 +88,10 @@ fn watch_loop(
                 match res {
                     Ok(watch) => {
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
-                        let stream_idx = pick_preferred_stream_index(&watch.streams, q_pref);
-                        let stream = &watch.streams[stream_idx];
+                        let primary_idx = pick_preferred_stream_index(&watch.streams, q_pref);
+                        let primary = &watch.streams[primary_idx];
 
-                        if !is_direct_stream_url(&stream.url) && !has_ytdlp() {
+                        if !is_direct_stream_url(&primary.url) && !has_ytdlp() {
                             let choices = vec![
                                 "Evet, 'sudo pacman -S yt-dlp' ile kur".to_string(),
                                 "Hayır, vazgeç".to_string(),
@@ -115,10 +115,36 @@ fn watch_loop(
                             }
                         }
 
+                        // Build candidate order: preferred first, then fallback to other streams if manual_quality wasn't locked
+                        let mut candidate_indices = vec![primary_idx];
+                        if manual_quality.is_none() {
+                            for i in 0..watch.streams.len() {
+                                if i != primary_idx && candidate_indices.len() < 6 {
+                                    candidate_indices.push(i);
+                                }
+                            }
+                        }
+
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
-                        if let Err(e) = play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title)
-                        {
-                            ui::show_error(&format!("Oynatma hatası: {e}"));
+                        let mut last_err = None;
+                        let mut played = false;
+                        for idx in candidate_indices {
+                            let stream = &watch.streams[idx];
+                            match play_mpv(stream, watch.subtitle_url.as_deref(), &mpv_title) {
+                                Ok(()) => {
+                                    played = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_err = Some(e);
+                                }
+                            }
+                        }
+
+                        if !played {
+                            if let Some(e) = last_err {
+                                ui::show_error(&format!("Oynatma hatası: {e}"));
+                            }
                         } else {
                             let _ = save_history_entry(HistoryEntry {
                                 source: anime.source.display_name().to_string(),
