@@ -172,6 +172,25 @@ pub fn show_error(msg: &str) {
 }
 
 pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
+    select_inner(title, subtitle, items, initial, false)
+}
+
+pub fn select_highlighted(
+    title: &str,
+    subtitle: &str,
+    items: &[String],
+    initial: usize,
+) -> Result<Option<usize>> {
+    select_inner(title, subtitle, items, initial, true)
+}
+
+fn select_inner(
+    title: &str,
+    subtitle: &str,
+    items: &[String],
+    initial: usize,
+    highlight: bool,
+) -> Result<Option<usize>> {
     let clean_items: Vec<(usize, &String)> = items
         .iter()
         .enumerate()
@@ -189,9 +208,14 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
         .collect::<Vec<_>>()
         .join("\n");
 
-    let use_filter = clean_items.len() > 8;
+    let use_filter = highlight || clean_items.len() > 8;
     let mut cmd = Command::new("gum");
     if use_filter {
+        let (cursor_fg, cursor_bg) = if highlight {
+            ("#1a1622", "#f4d6ec")
+        } else {
+            ("#e45cc0", "")
+        };
         cmd.args([
             "filter",
             "--placeholder",
@@ -203,7 +227,9 @@ pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> 
             "--indicator.foreground",
             "#e45cc0",
             "--cursor-text.foreground",
-            "#e45cc0",
+            cursor_fg,
+            "--cursor-text.background",
+            cursor_bg,
             "--text.foreground",
             "#8899aa",
             "--match.foreground",

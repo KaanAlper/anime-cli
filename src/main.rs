@@ -489,7 +489,7 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
         })
         .collect();
 
-    let Some(anime_idx) = ui::select(
+    let Some(anime_idx) = ui::select_highlighted(
         "Anime seç",
         &format!("{} sonuç ({})", results.len(), source_kind.display_name()),
         &titles,
