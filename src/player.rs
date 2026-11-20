@@ -209,7 +209,9 @@ pub fn play_mpv(
         .arg("--demuxer-max-bytes=150MiB");
 
     if is_hls {
-        cmd.arg("--demuxer-lavf-o=allowed_extensions=ALL");
+        cmd.arg("--demuxer=lavf")
+            .arg("--demuxer-lavf-format=hls")
+            .arg("--demuxer-lavf-o=allowed_extensions=ALL");
     }
     if resolved_embed {
         cmd.arg("--ytdl=no");
