@@ -72,9 +72,14 @@ fn watch_loop(
                 "Bölüm seç".into(),
             ]);
         }
+        let quality_label = if anime.source == SourceKind::TurkAnime {
+            "Oynatıcı / Fansub seç"
+        } else {
+            "Çözünürlük seç"
+        };
         options.extend([
             "".into(),
-            "Çözünürlük seç".into(),
+            quality_label.into(),
             "İndir".into(),
             "Geri".into(),
         ]);
@@ -120,13 +125,11 @@ fn watch_loop(
                             }
                         }
 
-                        // Build candidate order: preferred first, then fallback to other streams if manual_quality wasn't locked
+                        // Build candidate order: preferred first, then fallback to other streams if it fails
                         let mut candidate_indices = vec![primary_idx];
-                        if manual_quality.is_none() {
-                            for i in 0..watch.streams.len() {
-                                if i != primary_idx && candidate_indices.len() < 6 {
-                                    candidate_indices.push(i);
-                                }
+                        for i in 0..watch.streams.len() {
+                            if i != primary_idx && candidate_indices.len() < 6 {
+                                candidate_indices.push(i);
                             }
                         }
 
@@ -225,8 +228,8 @@ fn watch_loop(
                     ep_idx = idx;
                 }
             }
-            "Çözünürlük seç" => {
-                let res = ui::with_spinner("Çözünürlükler yükleniyor...", || {
+            "Çözünürlük seç" | "Oynatıcı / Fansub seç" => {
+                let res = ui::with_spinner("Seçenekler yükleniyor...", || {
                     fetch_watch_cached(anime.source, anime, episodes, ep_idx)
                 });
                 match res {
@@ -234,12 +237,12 @@ fn watch_loop(
                         let labels: Vec<String> =
                             watch.streams.iter().map(|s| s.label.clone()).collect();
                         if let Some(q_idx) =
-                            ui::select("Çözünürlük seç", &ep.title, &labels, 0)?
+                            ui::select(quality_label, &ep.title, &labels, 0)?
                         {
                             manual_quality = Some(labels[q_idx].clone());
                         }
                     }
-                    Err(e) => ui::show_error(&format!("Çözünürlükler alınamadı: {e}")),
+                    Err(e) => ui::show_error(&format!("Seçenekler alınamadı: {e}")),
                 }
             }
             "İndir" => {
