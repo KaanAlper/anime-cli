@@ -170,7 +170,7 @@ pub fn show_error(msg: &str) {
     let _ = io::stdin().read_line(&mut buf);
 }
 
-pub fn select(title: &str, subtitle: &str, items: &[String], _initial: usize) -> Result<Option<usize>> {
+pub fn select(title: &str, subtitle: &str, items: &[String], initial: usize) -> Result<Option<usize>> {
     let clean_items: Vec<(usize, &String)> = items
         .iter()
         .enumerate()
@@ -224,6 +224,11 @@ pub fn select(title: &str, subtitle: &str, items: &[String], _initial: usize) ->
             "--height",
             "18",
         ]);
+    }
+    if initial > 0
+        && let Some((_, init_item)) = clean_items.get(initial)
+    {
+        cmd.arg("--selected").arg(init_item.as_str());
     }
 
     let mut child = cmd

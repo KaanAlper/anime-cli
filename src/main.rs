@@ -12,13 +12,30 @@ use clap::Parser;
 use std::fs;
 
 use crate::config::{
-    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config,
+    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config, watched_for_anime,
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{
     build_playback_order, has_ytdlp, is_direct_stream_url, play_mpv,
 };
 use crate::sources::get_source;
+
+fn format_episode_choices(anime: &Anime, episodes: &[Episode]) -> (Vec<String>, usize) {
+    let (watched, last) = watched_for_anime(anime.source.display_name(), &anime.id);
+    let titles = episodes
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if watched.contains(&i) {
+                format!("{} ●", e.title)
+            } else {
+                e.title.clone()
+            }
+        })
+        .collect();
+    let initial = last.unwrap_or(0).min(episodes.len().saturating_sub(1));
+    (titles, initial)
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -222,6 +239,7 @@ fn watch_loop(
                                 is_movie: anime.is_movie,
                                 episode_index: ep_idx,
                                 episode_title: ep.title.clone(),
+                                watched_episodes: vec![ep_idx],
                             })
                         } else {
                             None
@@ -254,7 +272,7 @@ fn watch_loop(
                 }
             }
             "Bölüm seç" => {
-                let ep_titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
+                let (ep_titles, _) = format_episode_choices(anime, episodes);
                 if let Some(idx) = ui::select("Bölüm seç", &anime.title, &ep_titles, ep_idx)? {
                     ep_idx = idx;
                 }
@@ -411,8 +429,8 @@ fn search_and_watch(cfg: &mut AppConfig, source_kind: SourceKind) -> Result<()> 
     let ep_idx = if selected.is_movie || episodes.len() == 1 {
         0
     } else {
-        let ep_titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
-        match ui::select("Bölüm seç", &selected.title, &ep_titles, 0)? {
+        let (ep_titles, initial) = format_episode_choices(selected, &episodes);
+        match ui::select("Bölüm seç", &selected.title, &ep_titles, initial)? {
             Some(i) => i,
             None => return Ok(()),
         }
@@ -576,17 +594,17 @@ fn download_menu(
     match choice {
         0 => download_indices(cfg, anime, episodes, &[ep_idx], manual_quality),
         1 => {
-            let titles: Vec<String> = episodes.iter().map(|e| e.title.clone()).collect();
+            let (titles, _) = format_episode_choices(anime, episodes);
             if let Some(picked) = ui::multi_select(
                 "Bölümleri Seç (Space ile işaretle, Enter ile indir)",
                 &anime.title,
                 &titles,
                 &[],
             )? {
-                let indices: Vec<usize> = episodes
+                let indices: Vec<usize> = titles
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| picked.contains(&e.title))
+                    .filter(|(_, t)| picked.contains(t))
                     .map(|(i, _)| i)
                     .collect();
                 if !indices.is_empty() {

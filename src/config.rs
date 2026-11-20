@@ -53,6 +53,8 @@ pub struct HistoryEntry {
     pub is_movie: bool,
     pub episode_index: usize,
     pub episode_title: String,
+    #[serde(default)]
+    pub watched_episodes: Vec<usize>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -97,8 +99,39 @@ pub fn load_history() -> Vec<HistoryEntry> {
     Vec::new()
 }
 
-pub fn save_history_entry(entry: HistoryEntry) -> Result<()> {
+pub fn watched_for_anime(source: &str, anime_id: &str) -> (Vec<usize>, Option<usize>) {
+    let entries = load_history();
+    if let Some(e) = entries
+        .into_iter()
+        .find(|e| e.source == source && e.anime_id == anime_id)
+    {
+        let mut watched = e.watched_episodes;
+        if !watched.contains(&e.episode_index) {
+            watched.push(e.episode_index);
+        }
+        return (watched, Some(e.episode_index));
+    }
+    (Vec::new(), None)
+}
+
+pub fn save_history_entry(mut entry: HistoryEntry) -> Result<()> {
     let mut entries = load_history();
+    let mut watched = entries
+        .iter()
+        .find(|e| e.source == entry.source && e.anime_id == entry.anime_id)
+        .map(|e| {
+            let mut w = e.watched_episodes.clone();
+            if !w.contains(&e.episode_index) {
+                w.push(e.episode_index);
+            }
+            w
+        })
+        .unwrap_or_default();
+    if !watched.contains(&entry.episode_index) {
+        watched.push(entry.episode_index);
+    }
+    entry.watched_episodes = watched;
+
     entries.retain(|e| !(e.source == entry.source && e.anime_id == entry.anime_id));
     entries.insert(0, entry);
     entries.truncate(50);

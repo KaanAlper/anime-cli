@@ -240,19 +240,29 @@ pub fn play_mpv(
 local offset = 0
 local ignoring = false
 local timer = nil
+local function jump_to(abs_sec)
+    ignoring = true
+    offset = math.max(0, math.floor(abs_sec))
+    mp.osd_message(string.format("⏩ Konum: %02d:%02d", math.floor(offset / 60), offset % 60), 2)
+    mp.commandv("loadfile", base .. offset .. ".m3u8", "replace")
+    mp.add_timeout(1.5, function() ignoring = false end)
+end
 mp.register_event("seek", function()
     if ignoring then return end
     local pos = mp.get_property_number("time-pos")
     if not pos then return end
+    if offset > 0 and pos < 0.8 then
+        jump_to(offset - 15)
+        return
+    end
+    if offset > 0 then
+        local abs_now = math.floor(offset + pos)
+        mp.osd_message(string.format("⏱ %02d:%02d", math.floor(abs_now / 60), abs_now % 60), 1.5)
+    end
     if timer then timer:kill() end
     timer = mp.add_timeout(0.7, function()
         if mp.get_property_bool("paused-for-cache") or mp.get_property_bool("seeking") then
-            ignoring = true
-            local abs_sec = math.max(0, math.floor(offset + pos))
-            offset = abs_sec
-            mp.osd_message(string.format("⏩ Sarılıyor: %02d:%02d", math.floor(abs_sec / 60), abs_sec % 60), 2)
-            mp.commandv("loadfile", base .. abs_sec .. ".m3u8", "replace")
-            mp.add_timeout(1.5, function() ignoring = false end)
+            jump_to(offset + pos)
         end
     end)
 end)
