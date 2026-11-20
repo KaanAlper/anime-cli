@@ -211,8 +211,11 @@ pub fn play_mpv(
         .arg("--really-quiet")
         .arg("--no-terminal")
         .arg("--cache=yes")
+        .arg("--force-seekable=yes")
+        .arg("--hr-seek=yes")
         .arg("--demuxer-readahead-secs=60")
-        .arg("--demuxer-max-bytes=150MiB");
+        .arg("--demuxer-max-bytes=150MiB")
+        .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5");
 
     if is_hls {
         cmd.arg("--demuxer=lavf")
