@@ -39,9 +39,9 @@ fn format_episode_choices(
             let is_w = watched.contains(&i);
             let is_d = downloaded.contains(&i);
             match (is_w, is_d) {
-                (true, true) => format!("{} ✓✓ ⬇", e.title),
-                (true, false) => format!("{} ✓✓", e.title),
-                (false, true) => format!("{} ⬇", e.title),
+                (true, true) => format!("{} 󰸞 ⤓", e.title),
+                (true, false) => format!("{} 󰸞", e.title),
+                (false, true) => format!("{} ⤓", e.title),
                 (false, false) => e.title.clone(),
             }
         })
