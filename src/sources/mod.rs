@@ -9,7 +9,8 @@ use crate::models::{AnimeSource, SourceKind};
 
 pub fn build_client() -> Client {
     Client::builder()
-        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
         .build()
         .expect("failed to build HTTP client")
