@@ -129,29 +129,37 @@ fn watch_loop(
                             }
                         }
 
+                        if cfg.download_while_watching {
+                            let ep_in_season = episodes[..ep_idx]
+                                .iter()
+                                .filter(|e| e.season_num == ep.season_num)
+                                .count();
+                            download::emit(download::DownloadEvent::Enqueue(
+                                download::DownloadJob {
+                                    anime: anime.clone(),
+                                    episode: ep.clone(),
+                                    ep_in_season,
+                                    quality: q_pref.to_string(),
+                                    out_path: download::target_file_path(
+                                        &cfg.download_dir,
+                                        &anime.title,
+                                        &ep.title,
+                                    ),
+                                },
+                            ));
+                        }
+
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
                         let total = candidate_indices.len();
                         let mut last_err = None;
                         let mut played = false;
+
+                        download::emit(download::DownloadEvent::PlaybackStarted);
                         for (n, idx) in candidate_indices.into_iter().enumerate() {
                             if player::take_interrupted() {
                                 break;
                             }
                             let stream = &watch.streams[idx];
-                            if cfg.download_while_watching {
-                                let out = download::target_file_path(
-                                    &cfg.download_dir,
-                                    &anime.title,
-                                    &ep.title,
-                                );
-                                if !out.exists() {
-                                    let _ = download::spawn_background_download(
-                                        stream,
-                                        watch.subtitle_url.as_deref(),
-                                        &out,
-                                    );
-                                }
-                            }
                             println!(
                                 "\x1b[38;2;228;92;192m▶\x1b[0m Oynatılıyor ({}/{}): {}",
                                 n + 1,
@@ -172,6 +180,7 @@ fn watch_loop(
                                 }
                             }
                         }
+                        download::emit(download::DownloadEvent::PlaybackEnded);
 
                         if !played {
                             if let Some(e) = last_err {
@@ -342,39 +351,27 @@ fn download_range(
 ) {
     let q_pref = manual_quality.unwrap_or(&cfg.preferred_quality);
     let total = end_idx - start_idx + 1;
-    let mut ok_count = 0usize;
 
-    for (offset, idx) in (start_idx..=end_idx).enumerate() {
-        if player::take_interrupted() {
-            break;
-        }
+    for idx in start_idx..=end_idx {
         let ep = &episodes[idx];
-        println!(
-            "\n\x1b[38;2;228;92;192m⬇\x1b[0m İndiriliyor ({}/{}): {}",
-            offset + 1,
-            total,
-            ep.title
-        );
-        let Ok(watch) = fetch_watch_cached(anime.source, anime, episodes, idx) else {
-            eprintln!("\x1b[38;2;255;95;95m[!] Akış alınamadı: {}\x1b[0m", ep.title);
-            continue;
-        };
-        let stream_idx = pick_preferred_stream_index(&watch.streams, q_pref);
-        let stream = &watch.streams[stream_idx];
-        let out = download::target_file_path(&cfg.download_dir, &anime.title, &ep.title);
-
-        if let Err(e) = download::download_stream(stream, watch.subtitle_url.as_deref(), &out) {
-            eprintln!("\x1b[38;2;255;95;95m[!] İndirme hatası ({}): {e}\x1b[0m", ep.title);
-        } else {
-            ok_count += 1;
-        }
+        let ep_in_season = episodes[..idx]
+            .iter()
+            .filter(|e| e.season_num == ep.season_num)
+            .count();
+        download::emit(download::DownloadEvent::Enqueue(download::DownloadJob {
+            anime: anime.clone(),
+            episode: ep.clone(),
+            ep_in_season,
+            quality: q_pref.to_string(),
+            out_path: download::target_file_path(&cfg.download_dir, &anime.title, &ep.title),
+        }));
     }
 
     println!(
-        "\n\x1b[38;2;139;178;127m✔\x1b[0m Tamamlandı: {ok_count}/{total} bölüm indirildi -> {}",
+        "\n\x1b[38;2;139;178;127m✔\x1b[0m {total} bölüm indirme kuyruğuna eklendi -> {}",
         cfg.download_dir
     );
-    println!("\x1b[38;2;102;102;102mDevam etmek için Enter'a basın...\x1b[0m");
+    println!("\x1b[38;2;102;102;102mİzlerken otomatik duraklar, bitince devam eder. Enter'a basın...\x1b[0m");
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);
 }
@@ -537,10 +534,18 @@ fn main() -> Result<()> {
             "Çık".into(),
         ]);
 
+        let dl_status = download::get_status();
+        let dl_badge = if dl_status.active || dl_status.queued > 0 {
+            let state = if dl_status.paused { "Duraklatıldı" } else { "İndiriliyor" };
+            format!("  •  {state} (+{} kuyruk)", dl_status.queued)
+        } else {
+            String::new()
+        };
         let subtitle = format!(
-            "{}  •  Kalite: {}",
+            "{}  •  Kalite: {}{}",
             active_source.display_name(),
-            cfg.preferred_quality
+            cfg.preferred_quality,
+            dl_badge
         );
 
         let Some(idx) = ui::select("anime-cli", &subtitle, &menu, 0)? else {
