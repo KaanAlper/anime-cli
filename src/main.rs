@@ -517,61 +517,125 @@ fn download_indices(
     show_download_status(cfg);
 }
 
+fn render_progress_bar(pct: f64, width: usize) -> String {
+    let clamped = pct.clamp(0.0, 100.0);
+    let filled = ((clamped / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let mut bar = String::with_capacity(width * 3);
+    bar.push_str("\x1b[38;2;228;92;192m");
+    for _ in 0..filled {
+        bar.push('━');
+    }
+    if filled < width {
+        bar.push_str("\x1b[38;2;85;85;100m");
+        for _ in filled..width {
+            bar.push('─');
+        }
+    }
+    bar.push_str("\x1b[0m");
+    bar
+}
+
+fn parse_percent(progress: &str) -> f64 {
+    progress
+        .split('%')
+        .next()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
 fn show_download_status(cfg: &AppConfig) {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+
     let _ = player::take_interrupted();
-    print!("\x1b[2J\x1b[H\x1b[?25l");
-    let dir_line = format!("Klasör: {}", cfg.download_dir);
-    let box_w = dir_line.chars().count().max(24) + 4;
-    let border = "─".repeat(box_w);
-    let title_pad = " ".repeat(box_w.saturating_sub("✦ İndirme Yöneticisi".chars().count() + 2));
-    let dir_pad = " ".repeat(box_w.saturating_sub(dir_line.chars().count() + 2));
-    println!("\x1b[38;2;228;92;192m╭{border}╮\x1b[0m");
-    println!("\x1b[38;2;228;92;192m│\x1b[0m \x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m{title_pad} \x1b[38;2;228;92;192m│\x1b[0m");
-    println!("\x1b[38;2;228;92;192m│\x1b[0m \x1b[38;2;136;153;170m{dir_line}\x1b[0m{dir_pad} \x1b[38;2;228;92;192m│\x1b[0m");
-    println!("\x1b[38;2;228;92;192m╰{border}╯\x1b[0m\n");
+    let _ = std::io::stdout().write_all(b"\x1b[2J\x1b[H\x1b[?25l");
+    let _ = std::io::stdout().flush();
 
     loop {
-        print!("\x1b[6;1H");
         let st = bus::status();
+        let mut frame = String::with_capacity(2048);
+        frame.push_str("\x1b[H");
+
+        let dir_line = format!("Klasör: {}", cfg.download_dir);
+        let box_w = dir_line.chars().count().max(28) + 2;
+        let border = "─".repeat(box_w);
+        let title_pad = " ".repeat(box_w.saturating_sub("✦ İndirme Yöneticisi".chars().count() + 2));
+        let dir_pad = " ".repeat(box_w.saturating_sub(dir_line.chars().count() + 2));
+        let _ = writeln!(frame, "\x1b[38;2;228;92;192m╭{border}╮\x1b[0m\x1b[K");
+        let _ = writeln!(
+            frame,
+            "\x1b[38;2;228;92;192m│\x1b[0m \x1b[1;38;2;228;92;192m✦ İndirme Yöneticisi\x1b[0m{title_pad} \x1b[38;2;228;92;192m│\x1b[0m\x1b[K"
+        );
+        let _ = writeln!(
+            frame,
+            "\x1b[38;2;228;92;192m│\x1b[0m \x1b[38;2;136;153;170m{dir_line}\x1b[0m{dir_pad} \x1b[38;2;228;92;192m│\x1b[0m\x1b[K"
+        );
+        let _ = writeln!(frame, "\x1b[38;2;228;92;192m╰{border}╯\x1b[0m\x1b[K\n\x1b[K");
+
+        for done in &st.completed_titles {
+            let _ = writeln!(
+                frame,
+                "  \x1b[38;2;139;178;127m+\x1b[0m {done} \x1b[38;2;139;178;127mindirildi\x1b[0m\x1b[K"
+            );
+        }
+        for fail in &st.failed_titles {
+            let _ = writeln!(
+                frame,
+                "  \x1b[38;2;255;95;95m!\x1b[0m {fail} \x1b[38;2;255;95;95mindirilemedi\x1b[0m\x1b[K"
+            );
+        }
+        if !st.completed_titles.is_empty() || !st.failed_titles.is_empty() {
+            let _ = writeln!(frame, "\x1b[K");
+        }
+
         if !st.active_items.is_empty() {
-            let icon = if st.download_paused {
-                "\x1b[38;2;196;180;139m⏸ Duraklatıldı\x1b[0m"
+            let border_color = if st.download_paused {
+                "\x1b[38;2;196;180;139m"
             } else {
-                "\x1b[38;2;228;92;192m⬇ İndiriliyor\x1b[0m"
+                "\x1b[38;2;139;178;127m"
             };
             for (active, progress) in &st.active_items {
-                let prog = progress
-                    .as_deref()
-                    .map(|p| format!("  \x1b[38;2;139;178;127m[{p}]\x1b[0m"))
-                    .unwrap_or_default();
-                println!("  {icon}  {active}{prog}\x1b[K");
+                let prog_str = progress.as_deref().unwrap_or("Başlatılıyor...");
+                let pct = parse_percent(prog_str);
+                let bar = render_progress_bar(pct, 36);
+                let status_tag = if st.download_paused { "⏸ " } else { "" };
+                let header = format!(" {status_tag}{active} ");
+                let inner_w = 72usize.max(header.chars().count() + 4);
+                let right_dashes = "─".repeat(inner_w.saturating_sub(header.chars().count() + 1));
+                let bottom_dashes = "─".repeat(inner_w);
+                let _ = writeln!(frame, "  {border_color}╭─\x1b[1;37m{header}{border_color}{right_dashes}╮\x1b[0m\x1b[K");
+                let _ = writeln!(
+                    frame,
+                    "  {border_color}│\x1b[0m  {bar}  \x1b[38;2;196;180;139m{prog_str}\x1b[0m\x1b[K"
+                );
+                let _ = writeln!(frame, "  {border_color}╰{bottom_dashes}╯\x1b[0m\x1b[K");
             }
         } else if st.queued_downloads == 0
             && st.completed_titles.is_empty()
             && st.failed_titles.is_empty()
         {
-            println!("  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m\x1b[K");
+            let _ = writeln!(frame, "  \x1b[38;2;102;102;102mŞu an aktif indirme yok.\x1b[0m\x1b[K");
         }
 
         for q in &st.queued_titles {
-            println!("  \x1b[38;2;136;153;170m… Kuyrukta\x1b[0m     {q}\x1b[K");
+            let _ = writeln!(frame, "  \x1b[38;2;136;153;170m… Kuyrukta:\x1b[0m {q}\x1b[K");
         }
         if st.queued_downloads > st.queued_titles.len() {
-            println!(
+            let _ = writeln!(
+                frame,
                 "  \x1b[38;2;102;102;102m  ... ve {} bölüm daha\x1b[0m\x1b[K",
                 st.queued_downloads - st.queued_titles.len()
             );
         }
-        for done in &st.completed_titles {
-            println!("  \x1b[38;2;139;178;127m✔ Tamamlandı\x1b[0m   {done}\x1b[K");
-        }
-        for fail in &st.failed_titles {
-            println!("  \x1b[38;2;255;95;95m✖ Başarısız\x1b[0m    {fail}\x1b[K");
-        }
 
-        print!("\x1b[J");
+        frame.push_str("\x1b[J");
+        let _ = std::io::stdout().write_all(frame.as_bytes());
+        let _ = std::io::stdout().flush();
+
         if !st.active_download && st.queued_downloads == 0 {
-            print!("\x1b[?25h");
+            let _ = std::io::stdout().write_all(b"\x1b[?25h");
+            let _ = std::io::stdout().flush();
             println!("\n\x1b[38;2;102;102;102mMenüye dönmek için Enter'a basın...\x1b[0m");
             let mut buf = String::new();
             let _ = std::io::stdin().read_line(&mut buf);
@@ -579,16 +643,17 @@ fn show_download_status(cfg: &AppConfig) {
         }
 
         println!("\n\x1b[38;2;102;102;102mCanlı güncelleniyor... Menüye dönmek için Ctrl+C basın (indirme arkada devam eder)\x1b[0m\x1b[K");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        for _ in 0..5 {
+        for _ in 0..4 {
             if player::take_interrupted() {
-                print!("\x1b[?25h");
+                let _ = std::io::stdout().write_all(b"\x1b[?25h");
+                let _ = std::io::stdout().flush();
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(80));
         }
     }
-    print!("\x1b[?25h");
+    let _ = std::io::stdout().write_all(b"\x1b[?25h");
+    let _ = std::io::stdout().flush();
 }
 
 fn download_menu(
