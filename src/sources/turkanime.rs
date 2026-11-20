@@ -259,6 +259,11 @@ impl AnimeSource for TurkAnime {
                     label,
                     url,
                     referer,
+                    fansub: if fansub.is_empty() {
+                        None
+                    } else {
+                        Some(fansub.to_string())
+                    },
                 },
             ));
         }

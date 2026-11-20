@@ -89,7 +89,13 @@ impl Anizle {
         h
     }
 
-    fn extract_hls_variants(&self, m3u8_url: &str, referer: &str, label_prefix: &str) -> Vec<StreamOption> {
+    fn extract_hls_variants(
+        &self,
+        m3u8_url: &str,
+        referer: &str,
+        label_prefix: &str,
+        fansub: Option<&str>,
+    ) -> Vec<StreamOption> {
         let Ok(resp) = self
             .client
             .get(m3u8_url)
@@ -144,6 +150,7 @@ impl Anizle {
                     label: format!("{quality} ({label_prefix})"),
                     url: resolved,
                     referer: Some(referer.to_string()),
+                    fansub: fansub.map(|s| s.to_string()),
                 });
             }
         }
@@ -153,12 +160,19 @@ impl Anizle {
                 label: format!("Auto ({label_prefix})"),
                 url: m3u8_url.to_string(),
                 referer: Some(referer.to_string()),
+                fansub: fansub.map(|s| s.to_string()),
             });
         }
         variants
     }
 
-    fn resolve_video(&self, origin: &str, video_id: &str, label_prefix: &str) -> Vec<StreamOption> {
+    fn resolve_video(
+        &self,
+        origin: &str,
+        video_id: &str,
+        label_prefix: &str,
+        fansub: Option<&str>,
+    ) -> Vec<StreamOption> {
         let video_url = format!("{origin}/video/{video_id}");
         let Ok(resp) = self
             .client
@@ -235,7 +249,8 @@ impl Anizle {
             if m3u8_url.is_empty() {
                 continue;
             }
-            let variants = self.extract_hls_variants(&m3u8_url, &final_player_url, label_prefix);
+            let variants =
+                self.extract_hls_variants(&m3u8_url, &final_player_url, label_prefix, fansub);
             if !variants.is_empty() {
                 return variants;
             }
@@ -338,23 +353,33 @@ impl AnimeSource for Anizle {
         let (origin, html) = self.fetch_from_mirrors(&format!("/{}", episode.id))?;
 
         // v3 translator buttons
-        let v3_re = Regex::new(r#"data-sources="([^"]+/bolum/\d+/cevirmen/\d+)""#).unwrap();
-        let mut translator_urls: Vec<String> = v3_re
+        let v3_re = Regex::new(r#"data-translator-id="(\d+)"[^>]*data-sources="([^"]+/bolum/\d+/cevirmen/\d+)""#).unwrap();
+        let mut translators: Vec<(String, String)> = v3_re
             .captures_iter(&html)
-            .map(|c| c[1].to_string())
+            .map(|c| (format!("Çevirmen #{}", &c[1]), c[2].to_string()))
             .collect();
 
-        if translator_urls.is_empty() {
+        if translators.is_empty() {
+            let v3_alt = Regex::new(r#"data-sources="([^"]+/bolum/\d+/cevirmen/\d+)""#).unwrap();
+            translators = v3_alt
+                .captures_iter(&html)
+                .enumerate()
+                .map(|(i, c)| (format!("Çevirmen #{}", i + 1), c[1].to_string()))
+                .collect();
+        }
+
+        if translators.is_empty() {
             // Legacy fallback
             let old_re = Regex::new(r#"translator="([^"]+)""#).unwrap();
-            translator_urls = old_re
+            translators = old_re
                 .captures_iter(&html)
-                .map(|c| c[1].to_string())
+                .enumerate()
+                .map(|(i, c)| (format!("Fansub #{}", i + 1), c[1].to_string()))
                 .collect();
         }
 
         let mut streams = Vec::new();
-        for tr_url in translator_urls.iter().take(4) {
+        for (fansub_name, tr_url) in translators.iter().take(4) {
             let Ok(resp) = self
                 .client
                 .get(tr_url)
@@ -380,14 +405,15 @@ impl AnimeSource for Anizle {
                         || lower_name.contains("anizm")
                         || lower_name.contains("sistenn")
                     {
-                        let mut resolved =
-                            self.resolve_video(&origin, &vid_id.to_string(), name);
+                        let mut resolved = self.resolve_video(
+                            &origin,
+                            &vid_id.to_string(),
+                            name,
+                            Some(fansub_name.as_str()),
+                        );
                         streams.append(&mut resolved);
                     }
                 }
-            }
-            if !streams.is_empty() {
-                break;
             }
         }
 

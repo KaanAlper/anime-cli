@@ -57,11 +57,21 @@ fn watch_loop(
     mut ep_idx: usize,
 ) -> Result<()> {
     let mut manual_quality: Option<String> = None;
+    let mut selected_fansub: Option<String> = None;
 
     loop {
         let ep = &episodes[ep_idx];
         let active_q = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
-        let subtitle = format!("{}  •  Kalite: {}", anime.source.display_name(), active_q);
+        let fansub_badge = selected_fansub
+            .as_deref()
+            .map(|f| format!("  •  Fansub: {f}"))
+            .unwrap_or_default();
+        let subtitle = format!(
+            "{}  •  Kalite: {}{}",
+            anime.source.display_name(),
+            active_q,
+            fansub_badge
+        );
         let title = format!("{} ( {} )", anime.title, ep.title);
 
         let mut options = vec!["İzle".to_string()];
@@ -73,16 +83,15 @@ fn watch_loop(
             ]);
         }
         let quality_label = if anime.source == SourceKind::TurkAnime {
-            "Oynatıcı / Fansub seç"
+            "Oynatıcı seç"
         } else {
             "Çözünürlük seç"
         };
-        options.extend([
-            "".into(),
-            quality_label.into(),
-            "İndir".into(),
-            "Geri".into(),
-        ]);
+        options.push("".into());
+        if anime.source != SourceKind::AnimeciX {
+            options.push("Fansub seç".into());
+        }
+        options.extend([quality_label.into(), "İndir".into(), "Geri".into()]);
 
         let Some(picked_idx) = ui::select(&title, &subtitle, &options, 0)? else {
             return Ok(());
@@ -96,7 +105,49 @@ fn watch_loop(
                 match res {
                     Ok(watch) => {
                         let q_pref = manual_quality.as_deref().unwrap_or(&cfg.preferred_quality);
-                        let primary_idx = pick_preferred_stream_index(&watch.streams, q_pref);
+                        // Filter streams by selected fansub first if set, then fallback to others
+                        let matching_indices: Vec<usize> = if let Some(ref fs_name) = selected_fansub {
+                            let mut matched: Vec<usize> = watch
+                                .streams
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, s)| s.fansub.as_deref() == Some(fs_name.as_str()))
+                                .map(|(i, _)| i)
+                                .collect();
+                            if matched.is_empty() {
+                                (0..watch.streams.len()).collect()
+                            } else {
+                                let rest: Vec<usize> = (0..watch.streams.len())
+                                    .filter(|i| !matched.contains(i))
+                                    .collect();
+                                matched.extend(rest);
+                                matched
+                            }
+                        } else {
+                            (0..watch.streams.len()).collect()
+                        };
+
+                        let primary_idx = if let Some(ref fs_name) = selected_fansub {
+                            let fs_streams: Vec<_> = watch
+                                .streams
+                                .iter()
+                                .filter(|s| s.fansub.as_deref() == Some(fs_name.as_str()))
+                                .cloned()
+                                .collect();
+                            if fs_streams.is_empty() {
+                                pick_preferred_stream_index(&watch.streams, q_pref)
+                            } else {
+                                let local_idx = pick_preferred_stream_index(&fs_streams, q_pref);
+                                let chosen_url = &fs_streams[local_idx].url;
+                                watch
+                                    .streams
+                                    .iter()
+                                    .position(|s| &s.url == chosen_url && s.fansub.as_deref() == Some(fs_name.as_str()))
+                                    .unwrap_or(0)
+                            }
+                        } else {
+                            pick_preferred_stream_index(&watch.streams, q_pref)
+                        };
                         let primary = &watch.streams[primary_idx];
 
                         if !is_direct_stream_url(&primary.url) && !has_ytdlp() {
@@ -127,7 +178,7 @@ fn watch_loop(
 
                         // Build candidate order: preferred first, then fallback to other streams if it fails
                         let mut candidate_indices = vec![primary_idx];
-                        for i in 0..watch.streams.len() {
+                        for i in matching_indices {
                             if i != primary_idx && candidate_indices.len() < 6 {
                                 candidate_indices.push(i);
                             }
@@ -228,14 +279,55 @@ fn watch_loop(
                     ep_idx = idx;
                 }
             }
-            "Çözünürlük seç" | "Oynatıcı / Fansub seç" => {
+            "Fansub seç" => {
+                let res = ui::with_spinner("Fansublar yükleniyor...", || {
+                    fetch_watch_cached(anime.source, anime, episodes, ep_idx)
+                });
+                match res {
+                    Ok(watch) => {
+                        let mut fansubs: Vec<String> = Vec::new();
+                        for s in &watch.streams {
+                            if let Some(ref f) = s.fansub
+                                && !fansubs.contains(f)
+                            {
+                                fansubs.push(f.clone());
+                            }
+                        }
+                        if fansubs.is_empty() {
+                            ui::show_error("Bu bölüm için ayrı fansub bilgisi yok.");
+                        } else {
+                            let mut choices = vec!["Tümü (Otomatik)".to_string()];
+                            choices.extend(fansubs);
+                            if let Some(f_idx) =
+                                ui::select("Fansub seç", &ep.title, &choices, 0)?
+                            {
+                                selected_fansub = if f_idx == 0 {
+                                    None
+                                } else {
+                                    Some(choices[f_idx].clone())
+                                };
+                            }
+                        }
+                    }
+                    Err(e) => ui::show_error(&format!("Fansublar alınamadı: {e}")),
+                }
+            }
+            "Çözünürlük seç" | "Oynatıcı seç" => {
                 let res = ui::with_spinner("Seçenekler yükleniyor...", || {
                     fetch_watch_cached(anime.source, anime, episodes, ep_idx)
                 });
                 match res {
                     Ok(watch) => {
-                        let labels: Vec<String> =
-                            watch.streams.iter().map(|s| s.label.clone()).collect();
+                        let labels: Vec<String> = watch
+                            .streams
+                            .iter()
+                            .filter(|s| {
+                                selected_fansub
+                                    .as_deref()
+                                    .is_none_or(|f| s.fansub.as_deref() == Some(f))
+                            })
+                            .map(|s| s.label.clone())
+                            .collect();
                         if let Some(q_idx) =
                             ui::select(quality_label, &ep.title, &labels, 0)?
                         {

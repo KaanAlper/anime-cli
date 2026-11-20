@@ -206,17 +206,17 @@ mod tests {
     #[test]
     fn picks_highest_resolution_for_best() {
         let streams = vec![
-            StreamOption { label: "480p".into(), url: "u1".into(), referer: None },
-            StreamOption { label: "1080p".into(), url: "u2".into(), referer: None },
-            StreamOption { label: "720p".into(), url: "u3".into(), referer: None },
+            StreamOption { label: "480p".into(), url: "u1".into(), referer: None, fansub: None },
+            StreamOption { label: "1080p".into(), url: "u2".into(), referer: None, fansub: None },
+            StreamOption { label: "720p".into(), url: "u3".into(), referer: None, fansub: None },
         ];
         assert_eq!(pick_preferred_stream_index(&streams, "best"), 1);
         assert_eq!(pick_preferred_stream_index(&streams, "720p"), 2);
 
         let ordered_labels = vec![
-            StreamOption { label: "Stream A".into(), url: "u1".into(), referer: None },
-            StreamOption { label: "Stream B".into(), url: "u2".into(), referer: None },
-            StreamOption { label: "Stream C".into(), url: "u3".into(), referer: None },
+            StreamOption { label: "Stream A".into(), url: "u1".into(), referer: None, fansub: None },
+            StreamOption { label: "Stream B".into(), url: "u2".into(), referer: None, fansub: None },
+            StreamOption { label: "Stream C".into(), url: "u3".into(), referer: None, fansub: None },
         ];
         assert_eq!(pick_preferred_stream_index(&ordered_labels, "best"), 0);
     }

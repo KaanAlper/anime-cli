@@ -88,6 +88,7 @@ impl AnimeciX {
                         label,
                         url: u.to_string(),
                         referer: Some("https://yeshi.eu.org/".to_string()),
+                        fansub: None,
                     });
                 }
             }

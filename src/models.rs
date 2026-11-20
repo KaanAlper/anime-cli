@@ -54,6 +54,7 @@ pub struct StreamOption {
     pub label: String,
     pub url: String,
     pub referer: Option<String>,
+    pub fansub: Option<String>,
 }
 
 #[derive(Debug, Clone)]
