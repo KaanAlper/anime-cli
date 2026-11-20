@@ -103,9 +103,11 @@ fn watch_loop(
                                 0,
                             )?;
                             if picked == Some(0) {
+                                ui::suspend();
                                 let status = std::process::Command::new("sudo")
                                     .args(["pacman", "-S", "yt-dlp"])
                                     .status();
+                                let _ = ui::resume();
                                 if !matches!(status, Ok(s) if s.success()) {
                                     ui::show_error("yt-dlp kurulumu tamamlanamadı.");
                                     continue;
@@ -350,6 +352,7 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
 }
 
 fn main() -> Result<()> {
+    let _ui = ui::UiSession::start()?;
     let cli = Cli::parse();
     let mut cfg = load_config();
 
