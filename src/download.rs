@@ -3,10 +3,6 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
 
 use crate::models::{Anime, Episode, StreamOption};
 use crate::player::{has_command, pick_preferred_stream_index};
@@ -108,26 +104,12 @@ pub struct DownloadJob {
     pub out_path: PathBuf,
 }
 
-#[derive(Debug)]
-pub enum DownloadEvent {
-    Enqueue(DownloadJob),
-    PlaybackStarted,
-    PlaybackEnded,
-}
-
 #[derive(Debug, Default, Clone)]
-pub struct BusStatus {
+pub struct DownloadStatus {
     pub queued: usize,
     pub active: bool,
     pub paused: bool,
 }
-
-struct EventBus {
-    tx: Sender<DownloadEvent>,
-    status: Arc<Mutex<BusStatus>>,
-}
-
-static BUS: OnceLock<EventBus> = OnceLock::new();
 
 fn signal_pid(pid: u32, sig: &str) {
     let _ = Command::new("kill")
@@ -137,116 +119,94 @@ fn signal_pid(pid: u32, sig: &str) {
         .status();
 }
 
-fn init_bus() -> &'static EventBus {
-    BUS.get_or_init(|| {
-        let (tx, rx): (Sender<DownloadEvent>, Receiver<DownloadEvent>) = mpsc::channel();
-        let status = Arc::new(Mutex::new(BusStatus::default()));
-        let status_clone = Arc::clone(&status);
+pub struct DownloadManager {
+    queue: VecDeque<DownloadJob>,
+    known_paths: HashSet<PathBuf>,
+    active_child: Option<(Child, PathBuf)>,
+    playback_depth: usize,
+}
 
-        thread::spawn(move || {
-            let mut queue: VecDeque<DownloadJob> = VecDeque::new();
-            let mut known_paths: HashSet<PathBuf> = HashSet::new();
-            let mut active_child: Option<(Child, PathBuf)> = None;
-            let mut playback_depth: usize = 0;
+impl DownloadManager {
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            known_paths: HashSet::new(),
+            active_child: None,
+            playback_depth: 0,
+        }
+    }
 
-            loop {
-                while let Ok(ev) = rx.try_recv() {
-                    match ev {
-                        DownloadEvent::Enqueue(job) => {
-                            if !job.out_path.exists() && known_paths.insert(job.out_path.clone()) {
-                                queue.push_back(job);
-                            }
-                        }
-                        DownloadEvent::PlaybackStarted => {
-                            playback_depth += 1;
-                            if playback_depth == 1
-                                && let Some((ref child, _)) = active_child
-                            {
-                                signal_pid(child.id(), "-STOP");
-                            }
-                        }
-                        DownloadEvent::PlaybackEnded => {
-                            playback_depth = playback_depth.saturating_sub(1);
-                            if playback_depth == 0
-                                && let Some((ref child, _)) = active_child
-                            {
-                                signal_pid(child.id(), "-CONT");
-                            }
-                        }
-                    }
+    pub fn enqueue(&mut self, job: DownloadJob) {
+        if !job.out_path.exists() && self.known_paths.insert(job.out_path.clone()) {
+            self.queue.push_back(job);
+        }
+    }
+
+    pub fn on_playback_started(&mut self) {
+        self.playback_depth += 1;
+        if self.playback_depth == 1
+            && let Some((ref child, _)) = self.active_child
+        {
+            signal_pid(child.id(), "-STOP");
+        }
+    }
+
+    pub fn on_playback_ended(&mut self) {
+        self.playback_depth = self.playback_depth.saturating_sub(1);
+        if self.playback_depth == 0
+            && let Some((ref child, _)) = self.active_child
+        {
+            signal_pid(child.id(), "-CONT");
+        }
+    }
+
+    pub fn tick(&mut self) {
+        if let Some((mut child, path)) = self.active_child.take() {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => {
+                    self.known_paths.remove(&path);
                 }
-
-                // Reap finished child if any
-                if let Some((mut child, path)) = active_child.take() {
-                    match child.try_wait() {
-                        Ok(Some(_)) => {
-                            known_paths.remove(&path);
-                        }
-                        Ok(None) => {
-                            active_child = Some((child, path));
-                        }
-                        Err(_) => {
-                            known_paths.remove(&path);
-                        }
-                    }
+                Ok(None) => {
+                    self.active_child = Some((child, path));
                 }
-
-                // Start next job only when not paused and no active child
-                if playback_depth == 0
-                    && active_child.is_none()
-                    && let Some(job) = queue.pop_front()
-                {
-                    if !job.out_path.exists() {
-                        let src = get_source(job.anime.source);
-                        if let Ok(watch) =
-                            src.get_watch_data(&job.anime, &job.episode, job.ep_in_season)
-                            && !watch.streams.is_empty()
-                        {
-                            let idx =
-                                pick_preferred_stream_index(&watch.streams, &job.quality);
-                            let stream = &watch.streams[idx];
-                            if let Some(ref sub) = watch.subtitle_url
-                                && !sub.is_empty()
-                            {
-                                save_subtitle(sub, &job.out_path);
-                            }
-                            if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
-                                && let Ok(child) = cmd.spawn()
-                            {
-                                active_child = Some((child, job.out_path.clone()));
-                            } else {
-                                known_paths.remove(&job.out_path);
-                            }
-                        } else {
-                            known_paths.remove(&job.out_path);
-                        }
-                    } else {
-                        known_paths.remove(&job.out_path);
-                    }
-                }
-
-                if let Ok(mut st) = status_clone.lock() {
-                    st.queued = queue.len();
-                    st.active = active_child.is_some();
-                    st.paused = playback_depth > 0 && active_child.is_some();
-                }
-
-                thread::sleep(Duration::from_millis(150));
             }
-        });
+        }
 
-        EventBus { tx, status }
-    })
-}
+        if self.playback_depth == 0
+            && self.active_child.is_none()
+            && let Some(job) = self.queue.pop_front()
+        {
+            if !job.out_path.exists() {
+                let src = get_source(job.anime.source);
+                if let Ok(watch) = src.get_watch_data(&job.anime, &job.episode, job.ep_in_season)
+                    && !watch.streams.is_empty()
+                {
+                    let idx = pick_preferred_stream_index(&watch.streams, &job.quality);
+                    let stream = &watch.streams[idx];
+                    if let Some(ref sub) = watch.subtitle_url
+                        && !sub.is_empty()
+                    {
+                        save_subtitle(sub, &job.out_path);
+                    }
+                    if let Ok(mut cmd) = build_ytdlp_cmd(stream, &job.out_path)
+                        && let Ok(child) = cmd.spawn()
+                    {
+                        self.active_child = Some((child, job.out_path));
+                        return;
+                    }
+                }
+            }
+            self.known_paths.remove(&job.out_path);
+        }
+    }
 
-pub fn emit(event: DownloadEvent) {
-    let bus = init_bus();
-    let _ = bus.tx.send(event);
-}
-
-pub fn get_status() -> BusStatus {
-    let bus = init_bus();
-    bus.status.lock().map(|s| s.clone()).unwrap_or_default()
+    pub fn status(&self) -> DownloadStatus {
+        DownloadStatus {
+            queued: self.queue.len(),
+            active: self.active_child.is_some(),
+            paused: self.playback_depth > 0 && self.active_child.is_some(),
+        }
+    }
 }
 
 #[cfg(test)]

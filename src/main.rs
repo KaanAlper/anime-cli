@@ -1,3 +1,4 @@
+mod bus;
 mod config;
 mod download;
 mod models;
@@ -10,7 +11,7 @@ use clap::Parser;
 use std::fs;
 
 use crate::config::{
-    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config, save_history_entry,
+    AppConfig, HistoryEntry, cache_dir, load_config, load_history, save_config,
 };
 use crate::models::{Anime, Episode, SourceKind, WatchData};
 use crate::player::{
@@ -134,19 +135,17 @@ fn watch_loop(
                                 .iter()
                                 .filter(|e| e.season_num == ep.season_num)
                                 .count();
-                            download::emit(download::DownloadEvent::Enqueue(
-                                download::DownloadJob {
-                                    anime: anime.clone(),
-                                    episode: ep.clone(),
-                                    ep_in_season,
-                                    quality: q_pref.to_string(),
-                                    out_path: download::target_file_path(
-                                        &cfg.download_dir,
-                                        &anime.title,
-                                        &ep.title,
-                                    ),
-                                },
-                            ));
+                            bus::emit(bus::AppEvent::EnqueueDownload(download::DownloadJob {
+                                anime: anime.clone(),
+                                episode: ep.clone(),
+                                ep_in_season,
+                                quality: q_pref.to_string(),
+                                out_path: download::target_file_path(
+                                    &cfg.download_dir,
+                                    &anime.title,
+                                    &ep.title,
+                                ),
+                            }));
                         }
 
                         let mpv_title = format!("{} - {}", anime.title, ep.title);
@@ -154,7 +153,7 @@ fn watch_loop(
                         let mut last_err = None;
                         let mut played = false;
 
-                        download::emit(download::DownloadEvent::PlaybackStarted);
+                        bus::emit(bus::AppEvent::PlaybackStarted);
                         for (n, idx) in candidate_indices.into_iter().enumerate() {
                             if player::take_interrupted() {
                                 break;
@@ -180,21 +179,27 @@ fn watch_loop(
                                 }
                             }
                         }
-                        download::emit(download::DownloadEvent::PlaybackEnded);
 
-                        if !played {
-                            if let Some(e) = last_err {
-                                ui::show_error(&format!("Oynatma hatası: {e}"));
-                            }
-                        } else {
-                            let _ = save_history_entry(HistoryEntry {
+                        let history_entry = if played {
+                            Some(HistoryEntry {
                                 source: anime.source.display_name().to_string(),
                                 anime_id: anime.id.clone(),
                                 anime_title: anime.title.clone(),
                                 is_movie: anime.is_movie,
                                 episode_index: ep_idx,
                                 episode_title: ep.title.clone(),
-                            });
+                            })
+                        } else {
+                            None
+                        };
+                        bus::emit(bus::AppEvent::PlaybackEnded {
+                            history: history_entry,
+                        });
+
+                        if !played
+                            && let Some(e) = last_err
+                        {
+                            ui::show_error(&format!("Oynatma hatası: {e}"));
                         }
                     }
                     Err(e) => ui::show_error(&format!("Bölüm oynatılamadı: {e}")),
@@ -358,7 +363,7 @@ fn download_range(
             .iter()
             .filter(|e| e.season_num == ep.season_num)
             .count();
-        download::emit(download::DownloadEvent::Enqueue(download::DownloadJob {
+        bus::emit(bus::AppEvent::EnqueueDownload(download::DownloadJob {
             anime: anime.clone(),
             episode: ep.clone(),
             ep_in_season,
@@ -496,6 +501,7 @@ fn settings_menu(cfg: &mut AppConfig, active_source: &mut SourceKind) -> Result<
             }
             4 => {
                 let _ = fs::remove_dir_all(cache_dir());
+                bus::emit(bus::AppEvent::CacheCleared);
                 ui::show_error("Önbellek temizlendi.");
             }
             _ => return Ok(()),
@@ -534,10 +540,14 @@ fn main() -> Result<()> {
             "Çık".into(),
         ]);
 
-        let dl_status = download::get_status();
-        let dl_badge = if dl_status.active || dl_status.queued > 0 {
-            let state = if dl_status.paused { "Duraklatıldı" } else { "İndiriliyor" };
-            format!("  •  {state} (+{} kuyruk)", dl_status.queued)
+        let dl_status = bus::status();
+        let dl_badge = if dl_status.active_download || dl_status.queued_downloads > 0 {
+            let state = if dl_status.download_paused {
+                "Duraklatıldı"
+            } else {
+                "İndiriliyor"
+            };
+            format!("  •  {state} (+{} kuyruk)", dl_status.queued_downloads)
         } else {
             String::new()
         };
